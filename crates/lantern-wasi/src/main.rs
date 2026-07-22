@@ -3,6 +3,8 @@
 //! streams injected by the host page (milestone 3). The server console speaks
 //! plain stdin/stdout, which the page bridges to an on-screen terminal.
 
+mod net_bridge;
+
 use pumpkin::PumpkinServer;
 use pumpkin::data::VanillaData;
 use pumpkin_config::{LoadConfiguration, PumpkinConfig};
@@ -35,6 +37,11 @@ async fn run() {
     config.advanced.networking.lan_broadcast.enabled = false;
     config.advanced.commands.use_console = true;
     config.advanced.commands.use_tty = false;
+    // Mojang auth needs blocking HTTP (absent on wasm) — offline mode only.
+    config.advanced.networking.java.online_mode = false;
+    config.advanced.networking.java.encryption = false;
+    // Keep the byte stream inspectable while the bridge is young.
+    config.advanced.networking.java.compression.enabled = false;
     // Plain text into a DIY terminal; no ANSI escapes, no thread-id noise.
     config.advanced.logging.color = false;
     config.advanced.logging.threads = false;
@@ -46,6 +53,9 @@ async fn run() {
 
     let server = PumpkinServer::new(config.basic, config.advanced, vanilla_data).await;
     server.init_plugins().await;
+
+    // Virtual networking: streams arrive from the page over a WASI fd.
+    net_bridge::spawn(server.server.clone());
 
     tracing::info!("lantern: server up — type commands below (try: help, seed, time query daytime)");
 

@@ -1641,6 +1641,7 @@ dependencies = [
  "pumpkin-config",
  "tokio",
  "tracing",
+ "wasi",
 ]
 
 [[package]]

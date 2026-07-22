@@ -13,3 +13,4 @@ pumpkin = { path = "../../pumpkin/pumpkin" }
 pumpkin-config = { path = "../../pumpkin/pumpkin-config" }
 tokio = { version = "1.53", default-features = false, features = ["macros", "rt"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
+wasi = "0.11"

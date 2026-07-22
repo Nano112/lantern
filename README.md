@@ -54,9 +54,17 @@ wasm builds (applies into the submodule too).
   Build: `cargo build --target wasm32-wasip1-threads -p lantern-wasi --release`,
   copy `lantern.wasm` into `web/`, bundle `web/js/*` with esbuild into
   `web/dist/`, serve `web/` with `serve.py` (COOP/COEP headers required).
-- ⬜ Milestone 3: a client connected end-to-end. The seam exists —
-  `JavaClient::new_virtual(DuplexStream)` on wasm — next: JS bridge that pumps
-  duplex bytes to a WebSocket (via `proxy/`) or an in-page viewer.
+- ✅ Milestone 3 (networking): real Minecraft clients reach the browser server.
+  Chain: MC client → `proxy/` (vendored Aero Go proxy, TCP :25570) → WebSocket
+  (`:9091/ws`, wss via tailscale serve :9443) → page `NetBridgeFd` (mounted at
+  `./net.sock` in the WASI cwd) → `lantern-wasi::net_bridge` (Aero's mux
+  framing + u32 length prefix over the fd) → `tokio::io::duplex` →
+  `JavaClient::new_virtual` → `pumpkin::run_java_client`.
+  Verified end-to-end: server-list status ping returns full JSON; offline-mode
+  login reaches Login Success + configuration state. Browser config forces
+  offline mode (no Mojang HTTP on wasm), encryption+compression off for now.
+- ⬜ Full join (play state, chunk streaming to a real client) — untested; then
+  re-enable compression (+ maybe encryption), OPFS persistence, plugins.
 - ⬜ Persistence: swap the in-memory `compat::fs` store for OPFS.
 - ⬜ Threads: chunk pipeline (`rayon`/`crossfire`) currently must stay off-wasm;
   either single-threaded scheduling or SharedArrayBuffer + wasm threads later.
