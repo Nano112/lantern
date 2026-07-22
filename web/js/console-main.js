@@ -37,6 +37,8 @@ function writeText(text) {
 }
 
 const farmWorker = new Worker("./dist/farm-worker.js", { type: "module" });
+const offline = new URLSearchParams(location.search).has("offline");
+farmWorker.postMessage({ type: "init", env: [`LANTERN_ONLINE=${offline ? "0" : "1"}`] });
 farmWorker.onmessage = (e) => {
   const m = e.data;
   if (m.type === "term") writeText(m.text);

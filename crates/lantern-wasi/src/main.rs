@@ -44,9 +44,12 @@ async fn run() {
     // One dimension = one chunk pipeline; nether/end cost workers we can't spare.
     config.basic.allow_nether = false;
     config.basic.allow_end = false;
-    // Mojang auth needs blocking HTTP (absent on wasm) — offline mode only.
-    config.advanced.networking.java.online_mode = false;
-    config.advanced.networking.java.encryption = false;
+    // Online mode works via the host page's http.sock bridge (Mojang calls are
+    // reverse-proxied with CORS by the lantern proxy). ?offline=1 in the page
+    // URL turns it off for cracked/bot testing.
+    let online = std::env::var("LANTERN_ONLINE").map(|v| v != "0").unwrap_or(true);
+    config.advanced.networking.java.online_mode = online;
+    config.advanced.networking.java.encryption = online;
     // Keep the byte stream inspectable while the bridge is young.
     config.advanced.networking.java.compression.enabled = false;
     // Plain text into a DIY terminal; no ANSI escapes, no thread-id noise.
@@ -63,6 +66,19 @@ async fn run() {
 
     // Virtual networking: streams arrive from the page over a WASI fd.
     net_bridge::spawn(server.server.clone());
+
+    // Boot self-test: prove the http.sock bridge reaches Mojang via the proxy.
+    if online {
+        let auth_config = server.server.advanced_config.networking.java.authentication.clone();
+        tokio::spawn(async move {
+            match pumpkin::net::authentication::fetch_mojang_public_keys(&auth_config) {
+                Ok(keys) => {
+                    tracing::info!("lantern: Mojang reachable via http bridge ({} public keys)", keys.len());
+                }
+                Err(e) => tracing::warn!("lantern: Mojang http bridge self-test failed: {e}"),
+            }
+        });
+    }
 
     tracing::info!("lantern: server up — type commands below (try: help, seed, time query daytime)");
 

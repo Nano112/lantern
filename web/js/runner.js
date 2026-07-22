@@ -3,7 +3,7 @@
 import { WASIFarmAnimal } from "@oligami/browser_wasi_shim-threads";
 
 self.onmessage = async (e) => {
-  const { wasi_ref } = e.data;
+  const { wasi_ref, env } = e.data;
   try {
     postMessage({ status: "fetching lantern.wasm…" });
     const wasm = await WebAssembly.compileStreaming(fetch("/lantern.wasm"));
@@ -12,7 +12,7 @@ self.onmessage = async (e) => {
     const animal = new WASIFarmAnimal(
       wasi_ref,
       ["lantern"], // argv
-      ["RUST_MIN_STACK=16777216"],
+      ["RUST_MIN_STACK=16777216", ...(env ?? [])],
       {
         can_thread_spawn: true,
         thread_spawn_worker_url: new URL("./thread_spawn.js", self.location.href).href,

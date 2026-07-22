@@ -173,6 +173,14 @@ func main() {
 	// WebSocket endpoint for browsers without WebTransport
 	apiMux.Handle("/ws", wsHandler)
 
+	// lantern: Mojang API reverse proxies on the always-on API port, with CORS
+	// so cross-origin isolated browser sessions can fetch them. Used by the
+	// in-wasm server's online-mode authentication (http.sock bridge).
+	mojangLimiter := ratelimit.New(5, 10)
+	apiMux.Handle("/api/mojang/", corsWrap(mojangLimiter.HTTPMiddleware(hostProxy("https://sessionserver.mojang.com", "/api/mojang"))))
+	apiMux.Handle("/api/mojang-services/", corsWrap(mojangLimiter.HTTPMiddleware(hostProxy("https://api.minecraftservices.com", "/api/mojang-services"))))
+	apiMux.Handle("/api/mojang-api/", corsWrap(mojangLimiter.HTTPMiddleware(hostProxy("https://api.mojang.com", "/api/mojang-api"))))
+
 	apiMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		fmt.Fprintln(w, "Aero Proxy — API server")
@@ -250,6 +258,40 @@ func main() {
 }
 
 // webHandler builds an HTTP handler that serves static files with SPA fallback,
+// hostProxy reverse-proxies prefix-stripped requests to the given HTTPS host.
+func hostProxy(target string, prefix string) http.Handler {
+	parsed, _ := url.Parse(target)
+	return &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = parsed.Scheme
+			req.URL.Host = parsed.Host
+			req.Host = parsed.Host
+			req.URL.Path = strings.TrimPrefix(req.URL.Path, prefix)
+			if req.URL.Path == "" {
+				req.URL.Path = "/"
+			}
+			req.Header.Set("Accept", "application/json")
+		},
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{},
+		},
+	}
+}
+
+// corsWrap allows any origin: these endpoints only front public Mojang APIs.
+func corsWrap(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // proxies /api/mojang/ to Mojang's session server, and adds gzip-friendly headers.
 func webHandler(dir string, database *db.DB, jwtSecret string, domain string, tcpPort int, certHash string, wtPort int, wsHandler http.Handler, rtr *proxyRouter.Router) http.Handler {
 	absDir, err := filepath.Abs(dir)

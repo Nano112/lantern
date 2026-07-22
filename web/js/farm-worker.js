@@ -109,6 +109,92 @@ class NetSockInode extends Inode {
   }
 }
 
+// HTTP bridge: the wasm side writes "[u32 len][u32 req_id][METHOD url]" frames;
+// we fetch via the lantern proxy's CORS'd Mojang endpoints and answer with
+// "[u32 len][u32 req_id][u16 status][body]".
+const HTTP_HOST_MAP = {
+  "sessionserver.mojang.com": "/api/mojang",
+  "api.minecraftservices.com": "/api/mojang-services",
+  "api.mojang.com": "/api/mojang-api",
+};
+
+function apiBase() {
+  return self.location.hostname === "localhost"
+    ? "http://localhost:9091"
+    : `https://${self.location.hostname}:9443`;
+}
+
+class HttpBridgeFd extends Fd {
+  rx = new Uint8Array(0);
+  txbuf = new Uint8Array(0);
+
+  fd_fdstat_get() {
+    const fdstat = new wasi.Fdstat(wasi.FILETYPE_CHARACTER_DEVICE, 0);
+    fdstat.fs_rights_base = BigInt(wasi.RIGHTS_FD_READ) | BigInt(wasi.RIGHTS_FD_WRITE);
+    return { ret: 0, fdstat };
+  }
+
+  fd_filestat_get() {
+    return { ret: 0, filestat: new wasi.Filestat(0n, wasi.FILETYPE_CHARACTER_DEVICE, 0n) };
+  }
+
+  fd_read(len) {
+    const n = Math.min(len, this.rx.length);
+    const data = this.rx.slice(0, n);
+    this.rx = this.rx.slice(n);
+    return { ret: 0, data };
+  }
+
+  fd_write(data) {
+    const merged = new Uint8Array(this.txbuf.length + data.length);
+    merged.set(this.txbuf);
+    merged.set(data, this.txbuf.length);
+    this.txbuf = merged;
+    while (this.txbuf.length >= 4) {
+      const flen = new DataView(this.txbuf.buffer, this.txbuf.byteOffset).getUint32(0);
+      if (this.txbuf.length < 4 + flen) break;
+      const frame = this.txbuf.slice(4, 4 + flen);
+      this.txbuf = this.txbuf.slice(4 + flen);
+      this.handleRequest(frame);
+    }
+    return { ret: 0, nwritten: data.byteLength };
+  }
+
+  async handleRequest(frame) {
+    const reqId = new DataView(frame.buffer, frame.byteOffset).getUint32(0);
+    let status = 502;
+    let body = new Uint8Array(0);
+    try {
+      const [method, url] = new TextDecoder().decode(frame.slice(4)).split(" ", 2);
+      const u = new URL(url);
+      const prefix = HTTP_HOST_MAP[u.hostname];
+      if (prefix) {
+        const path = u.pathname.replace(/\/{2,}/g, "/");
+        const target = `${apiBase()}${prefix}${path}${u.search}`;
+        const resp = await fetch(target, { method });
+        status = resp.status;
+        body = new Uint8Array(await resp.arrayBuffer());
+      } else {
+        console.warn("http bridge: host not allowlisted:", u.hostname);
+      }
+    } catch (e) {
+      console.warn("http bridge: request failed:", e);
+    }
+    const out = new Uint8Array(4 + 4 + 2 + body.length);
+    const dv = new DataView(out.buffer);
+    dv.setUint32(0, 6 + body.length);
+    dv.setUint32(4, reqId);
+    dv.setUint16(8, status);
+    out.set(body, 10);
+    const merged = new Uint8Array(this.rx.length + out.length);
+    merged.set(this.rx);
+    merged.set(out, this.rx.length);
+    this.rx = merged;
+  }
+}
+
+const httpFd = new HttpBridgeFd();
+
 function connectProxy() {
   const url = self.location.hostname === "localhost"
     ? "ws://localhost:9091/ws"
@@ -143,16 +229,21 @@ function connectProxy() {
 connectProxy();
 
 const stdin = new QueueStdin();
-const cwd = new PreopenDirectory(".", new Map([["net.sock", new NetSockInode(netFd)]]));
+const cwd = new PreopenDirectory(".", new Map([
+  ["net.sock", new NetSockInode(netFd)],
+  ["http.sock", new NetSockInode(httpFd)],
+]));
 const farm = new WASIFarm(stdin, new TerminalOut(), new TerminalOut(), [cwd]);
 
-const runner = new Worker(new URL("./runner.js", self.location.href), { type: "module" });
-runner.postMessage({ wasi_ref: farm.get_ref() });
-runner.onmessage = (e) => {
-  if (e.data.status) post({ type: "status", status: e.data.status });
-  if (e.data.error) post({ type: "error", error: e.data.error });
-};
-
+let runner = null;
 self.onmessage = (e) => {
   if (e.data.type === "stdin") stdin.push(e.data.line);
+  else if (e.data.type === "init" && !runner) {
+    runner = new Worker(new URL("./runner.js", self.location.href), { type: "module" });
+    runner.postMessage({ wasi_ref: farm.get_ref(), env: e.data.env });
+    runner.onmessage = (ev) => {
+      if (ev.data.status) post({ type: "status", status: ev.data.status });
+      if (ev.data.error) post({ type: "error", error: ev.data.error });
+    };
+  }
 };
