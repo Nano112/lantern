@@ -1,0 +1,17 @@
+[package]
+name = "lantern-web"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"
+getrandom = { version = "0.4", features = ["wasm_js"] }
+
+pumpkin-world = { path = "../../pumpkin/pumpkin-world" }
+pumpkin-data = { path = "../../pumpkin/pumpkin-data" }
+pumpkin-util = { path = "../../pumpkin/pumpkin-util" }

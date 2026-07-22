@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>lantern — Pumpkin in the browser</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #16130f; color: #e8dcc8; font: 14px/1.5 ui-monospace, monospace; }
+  header { display: flex; gap: 1rem; align-items: baseline; padding: 12px 16px; }
+  h1 { font-size: 16px; margin: 0; color: #f0a030; }
+  #status { color: #9a8f7a; }
+  #map { display: block; margin: 0 auto; image-rendering: pixelated; border: 1px solid #3a332a; }
+  .controls { padding: 0 16px 12px; display: flex; gap: 12px; align-items: center; }
+  input { background: #241f18; color: inherit; border: 1px solid #3a332a; padding: 4px 8px; width: 8em; }
+  button { background: #f0a030; color: #16130f; border: 0; padding: 5px 14px; font: inherit; cursor: pointer; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎃 lantern</h1>
+  <div id="status">loading wasm…</div>
+</header>
+<div class="controls">
+  <label>seed <input id="seed" type="number" value="42"></label>
+  <button id="go">generate</button>
+  <span id="timing"></span>
+</div>
+<canvas id="map" width="512" height="512"></canvas>
+
+<script type="module">
+import init, { LanternWorld, block_name, pumpkin_version } from './pkg/lantern_web.js';
+
+const status = document.getElementById('status');
+const timing = document.getElementById('timing');
+const canvas = document.getElementById('map');
+const ctx = canvas.getContext('2d');
+
+// Rough vanilla-map palette by block name; anything unknown shades by height.
+const PALETTE = {
+  water: [63, 118, 228], grass_block: [89, 125, 39], sand: [247, 233, 163],
+  gravel: [136, 126, 126], stone: [112, 112, 112], dirt: [134, 96, 67],
+  snow: [255, 255, 255], snow_block: [250, 250, 250], oak_leaves: [58, 95, 11],
+  birch_leaves: [107, 141, 70], spruce_leaves: [42, 72, 24], ice: [160, 166, 255],
+  packed_ice: [141, 180, 250], lava: [207, 92, 20], clay: [164, 168, 184],
+  mycelium: [111, 99, 105], podzol: [100, 70, 35], terracotta: [152, 94, 67],
+};
+const nameCache = new Map();
+function colorFor(stateId, y) {
+  let name = nameCache.get(stateId);
+  if (name === undefined) { name = block_name(stateId); nameCache.set(stateId, name); }
+  let rgb = PALETTE[name];
+  for (const key of Object.keys(PALETTE)) {
+    if (rgb) break;
+    if (name.includes(key.split('_')[0])) rgb = PALETTE[key];
+  }
+  if (!rgb) { const v = 90 + Math.max(-60, Math.min(120, y)); rgb = [v * 0.9, v * 0.85, v * 0.8]; }
+  // Height shading: brighter high, darker low.
+  const shade = 0.75 + Math.max(0, Math.min(0.5, (y - 40) / 160));
+  return rgb.map(c => Math.min(255, c * shade));
+}
+
+const CHUNKS = 8; // renders an 8x8 chunk area (128x128 blocks) at 4px per block
+const SCALE = canvas.width / (CHUNKS * 16);
+
+async function run() {
+  await init();
+  status.textContent = pumpkin_version() + ' — ready';
+
+  document.getElementById('go').onclick = () => generate();
+  generate();
+}
+
+async function generate() {
+  const seed = Number(document.getElementById('seed').value) >>> 0;
+  status.textContent = 'building generator…';
+  await new Promise(r => setTimeout(r));
+  const t0 = performance.now();
+  const world = new LanternWorld(seed);
+  let done = 0;
+
+  for (let cz = 0; cz < CHUNKS; cz++) {
+    for (let cx = 0; cx < CHUNKS; cx++) {
+      const surface = world.chunk_surface(cx, cz);
+      for (let x = 0; x < 16; x++) {
+        for (let z = 0; z < 16; z++) {
+          const i = (x * 16 + z) * 2;
+          const y = surface[i], stateId = surface[i + 1];
+          const [r, g, b] = colorFor(stateId, y);
+          ctx.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
+          ctx.fillRect((cx * 16 + x) * SCALE, (cz * 16 + z) * SCALE, SCALE, SCALE);
+        }
+      }
+      done++;
+      status.textContent = `generating… ${done}/${CHUNKS * CHUNKS} chunks`;
+      timing.textContent = `${((performance.now() - t0) / done).toFixed(0)} ms/chunk`;
+      // Yield to the event loop so the canvas paints progressively.
+      await new Promise(r => setTimeout(r));
+    }
+  }
+  status.textContent = `done — ${CHUNKS * CHUNKS} chunks (vanilla overworld gen, in your browser)`;
+  world.free();
+}
+
+run().catch(e => { status.textContent = 'error: ' + e; console.error(e); });
+</script>
+</body>
+</html>

@@ -1,0 +1,3 @@
+# Applies to everything under lantern/, including the pumpkin submodule.
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
