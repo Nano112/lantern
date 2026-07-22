@@ -2,6 +2,7 @@ package transport
 
 import (
 	"encoding/binary"
+	"time"
 	"encoding/json"
 	"io"
 	"log"
@@ -179,14 +180,45 @@ type wsSession struct {
 	control chan []byte // buffered control messages (stream 0)
 }
 
+const (
+	wsPingInterval = 20 * time.Second
+	wsReadTimeout  = 50 * time.Second
+)
+
 func newWSSession(conn *websocket.Conn) *wsSession {
 	s := &wsSession{
 		conn:    conn,
 		done:    make(chan struct{}),
 		control: make(chan []byte, 32),
 	}
+	// lantern: keepalive so dead browser sessions release their room within a
+	// minute instead of squatting on it until TCP gives up.
+	conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
+	})
+	go s.pingLoop()
 	go s.readLoop()
 	return s
+}
+
+func (s *wsSession) pingLoop() {
+	ticker := time.NewTicker(wsPingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.writeMu.Lock()
+			err := s.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second))
+			s.writeMu.Unlock()
+			if err != nil {
+				s.closeDone()
+				return
+			}
+		case <-s.done:
+			return
+		}
+	}
 }
 
 func (s *wsSession) readLoop() {

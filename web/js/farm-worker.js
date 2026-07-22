@@ -215,6 +215,13 @@ function connectProxy() {
         const resp = JSON.parse(new TextDecoder().decode(f.slice(5)));
         if (resp.room) post({ type: "room", room: resp.room });
         writeText(`[proxy] room "${resp.room ?? "?"}" registered\n`);
+        // Suffixed room = someone (likely a stale session) holds "default",
+        // which is the only room reachable over plain DNS. Keep retrying —
+        // the proxy's keepalive frees dead sessions within a minute.
+        if (resp.room && resp.room !== "default") {
+          writeText(`[proxy] "default" is taken (stale session?) — retrying in 15s\n`);
+          setTimeout(() => ws.close(), 15000);
+        }
       } catch { /* non-JSON control noise */ }
       return;
     }
