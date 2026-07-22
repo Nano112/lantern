@@ -59,6 +59,13 @@ wasm builds (applies into the submodule too).
 
 ## Gotchas
 
+- Clone with `git submodule update --init --recursive` — Pumpkin itself has a
+  nested submodule (`pumpkin-plugin-wit`, the WIT plugin interfaces); without it
+  the main `pumpkin` crate fails with 35 `cannot find pumpkin in v0_1` errors.
+- Native server: `cargo build --release -p pumpkin` inside `pumpkin/`, run the
+  binary from `run/` (config + world land in cwd). Targets MC Java 26.2,
+  accepts clients ≥ 1.20.5.
+
 - Pumpkin requires a recent stable Rust (`rust-version = 1.95`+).
 - `Chunk` returns either `Proto` or `Level`; lantern-web handles both.
 - Time on wasm is a stub (`compat::time::timeout` never elapses) — fine while
