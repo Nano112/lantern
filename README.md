@@ -44,20 +44,31 @@ wasm builds (applies into the submodule too).
   native builds still green.
 - ✅ Milestone 1: vanilla overworld chunk generation runs in the browser
   (single-threaded `generate_single_chunk` path — no tokio runtime needed).
-- ⬜ Milestone 2: the `pumpkin` main crate on wasm. Known surgery, all confined:
-  - plugin system (`wasmtime` host + `libloading`) → feature-gate off for web
-    (long-term: load WIT plugins with the browser's own wasm engine instead);
-  - `rustyline` console, `sysinfo` crash reporter, `notify` watchers, `signal`
-    handling → gate to native;
-  - TCP accept loop → a `VirtualTransport` (bytes in/out over a JS bridge), the
-    same seam the proxy uses.
-- ⬜ Milestone 3: tick loop + a client connected end-to-end through the virtual
-  transport (in-page viewer first, then real clients via `proxy/`).
+- ✅ Milestone 2: the full server runs in the browser. Target is
+  `wasm32-wasip1-threads` (real threads via web workers + SharedArrayBuffer,
+  real clocks — Pumpkin's thread-based chunk pipeline runs unmodified).
+  `crates/lantern-wasi` boots the server with networking disabled; the page
+  (`web/console.html`) hosts a WASI farm (`@oligami/browser_wasi_shim-threads`)
+  and bridges stdin/stdout to an on-screen server console. Tick loop runs at
+  20 TPS; `seed`, `time query`, `difficulty`, … all work.
+  Build: `cargo build --target wasm32-wasip1-threads -p lantern-wasi --release`,
+  copy `lantern.wasm` into `web/`, bundle `web/js/*` with esbuild into
+  `web/dist/`, serve `web/` with `serve.py` (COOP/COEP headers required).
+- ⬜ Milestone 3: a client connected end-to-end. The seam exists —
+  `JavaClient::new_virtual(DuplexStream)` on wasm — next: JS bridge that pumps
+  duplex bytes to a WebSocket (via `proxy/`) or an in-page viewer.
 - ⬜ Persistence: swap the in-memory `compat::fs` store for OPFS.
 - ⬜ Threads: chunk pipeline (`rayon`/`crossfire`) currently must stay off-wasm;
   either single-threaded scheduling or SharedArrayBuffer + wasm threads later.
 
 ## Gotchas
+
+- The shipped `@oligami/browser_wasi_shim-threads` 0.4.1 has a `poll_oneoff`
+  bug against `@bjorn3/browser_wasi_shim` 0.4.2 (`s.precision` is undefined →
+  BigInt TypeError in every `thread::sleep`). We patch `node_modules` before
+  bundling — see README-web notes / re-apply after `npm install`.
+- Console input: browser stdin is a polled mailbox; the fork treats empty
+  stdin reads as "no input yet" on wasm (never EOF).
 
 - Clone with `git submodule update --init --recursive` — Pumpkin itself has a
   nested submodule (`pumpkin-plugin-wit`, the WIT plugin interfaces); without it

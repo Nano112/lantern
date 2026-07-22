@@ -1,0 +1,53 @@
+//! lantern: Pumpkin compiled for `wasm32-wasip1-threads`, running in a browser
+//! WASI shim. Networking is disabled — clients will arrive over virtual duplex
+//! streams injected by the host page (milestone 3). The server console speaks
+//! plain stdin/stdout, which the page bridges to an on-screen terminal.
+
+use pumpkin::PumpkinServer;
+use pumpkin::data::VanillaData;
+use pumpkin_config::{LoadConfiguration, PumpkinConfig};
+
+fn main() {
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!("server panicked: {info}");
+    }));
+
+    // Threads exist on wasip1-threads, but tokio only supports the
+    // current-thread runtime on wasm targets.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("failed to build tokio runtime");
+
+    runtime.block_on(run());
+}
+
+async fn run() {
+    let exec_dir = std::env::current_dir().expect("no cwd (is a preopened dir mounted?)");
+    let mut config = PumpkinConfig::load(&exec_dir);
+
+    // Browser build: no OS sockets, no TTY. Console I/O runs over WASI
+    // stdin/stdout regardless of what the config file says.
+    config.advanced.networking.java.enabled = false;
+    config.advanced.networking.bedrock.enabled = false;
+    config.advanced.networking.rcon.enabled = false;
+    config.advanced.networking.query.enabled = false;
+    config.advanced.networking.lan_broadcast.enabled = false;
+    config.advanced.commands.use_console = true;
+    config.advanced.commands.use_tty = false;
+    // Plain text into a DIY terminal; no ANSI escapes, no thread-id noise.
+    config.advanced.logging.color = false;
+    config.advanced.logging.threads = false;
+
+    let vanilla_data = VanillaData::load();
+    pumpkin::init_logger(&config.advanced);
+
+    tracing::info!("lantern: booting Pumpkin inside WebAssembly");
+
+    let server = PumpkinServer::new(config.basic, config.advanced, vanilla_data).await;
+    server.init_plugins().await;
+
+    tracing::info!("lantern: server up — type commands below (try: help, seed, time query daytime)");
+
+    server.start().await;
+}
