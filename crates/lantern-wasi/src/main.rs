@@ -18,6 +18,10 @@ fn main() {
     // current-thread runtime on wasm targets.
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
+        // Blocking threads are Web Workers here — spawning one means
+        // instantiating the whole module. Keep them alive and few.
+        .max_blocking_threads(4)
+        .thread_keep_alive(std::time::Duration::from_secs(24 * 3600))
         .build()
         .expect("failed to build tokio runtime");
 
@@ -37,6 +41,9 @@ async fn run() {
     config.advanced.networking.lan_broadcast.enabled = false;
     config.advanced.commands.use_console = true;
     config.advanced.commands.use_tty = false;
+    // One dimension = one chunk pipeline; nether/end cost workers we can't spare.
+    config.basic.allow_nether = false;
+    config.basic.allow_end = false;
     // Mojang auth needs blocking HTTP (absent on wasm) — offline mode only.
     config.advanced.networking.java.online_mode = false;
     config.advanced.networking.java.encryption = false;

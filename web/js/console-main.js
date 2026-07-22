@@ -136,13 +136,19 @@ function connectProxy() {
     ws.send(wsFrame(0, 0, reg)); // registration on control stream 0
     statusEl.textContent = "server running — proxy connected";
   };
+  ws.registrationShown = false;
   ws.onmessage = (ev) => {
     const f = new Uint8Array(ev.data);
     const sid = new DataView(f.buffer, f.byteOffset).getUint32(1);
     if (sid === 0) {
       try {
         const resp = JSON.parse(new TextDecoder().decode(f.slice(5)));
-        writeText(`[proxy] room "${resp.room ?? "?"}" registered (${JSON.stringify(resp)})\n`);
+        const mcHost = location.hostname === "localhost" ? "localhost" : location.hostname;
+        const connectEl = document.getElementById("connect");
+        if (resp.room && connectEl) {
+          connectEl.textContent = `Minecraft Java 26.2 → ${mcHost}:25570 (room "${resp.room}")`;
+        }
+        writeText(`[proxy] room "${resp.room ?? "?"}" registered\n`);
       } catch { /* non-JSON control noise */ }
       return;
     }

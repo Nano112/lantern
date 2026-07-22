@@ -30,7 +30,7 @@ const MSG_CLOSE: u8 = 2;
 
 /// How often we poll the fd when it has no data. The page side has no way to
 /// wake us, so this bounds added latency per hop.
-const POLL_INTERVAL: Duration = Duration::from_millis(10);
+const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 fn open_bridge() -> std::io::Result<u32> {
     use std::os::fd::{AsRawFd, IntoRawFd};
