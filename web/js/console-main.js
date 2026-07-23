@@ -40,7 +40,7 @@ const farmWorker = new Worker("./dist/farm-worker.js", { type: "module" });
 const params = new URLSearchParams(location.search);
 const env = [`LANTERN_ONLINE=${params.has("offline") ? "0" : "1"}`];
 if (params.has("bench")) env.push(`LANTERN_BENCH=${params.get("bench")}`);
-farmWorker.postMessage({ type: "init", env });
+farmWorker.postMessage({ type: "init", env, fresh: params.has("fresh") });
 farmWorker.onmessage = (e) => {
   const m = e.data;
   if (m.type === "term") writeText(m.text);

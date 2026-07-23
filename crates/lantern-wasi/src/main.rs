@@ -5,6 +5,7 @@
 
 mod metrics;
 mod net_bridge;
+mod persist;
 
 use pumpkin::PumpkinServer;
 use pumpkin::data::VanillaData;
@@ -30,6 +31,10 @@ fn main() {
 }
 
 async fn run() {
+    // Restore a previous session's world before anything reads config or disk.
+    // (Logger isn't up yet — stash the outcome and report it after init.)
+    let restore_result = persist::restore();
+
     let exec_dir = std::env::current_dir().expect("no cwd (is a preopened dir mounted?)");
     let mut config = PumpkinConfig::load(&exec_dir);
 
@@ -68,6 +73,15 @@ async fn run() {
     pumpkin::init_logger(&config.advanced);
 
     tracing::info!("lantern: booting Pumpkin inside WebAssembly");
+    match restore_result {
+        Ok((mem, wasi)) => {
+            tracing::info!("persist: restored {mem} world files + {wasi} data files from OPFS");
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::info!("persist: no previous state — fresh world");
+        }
+        Err(e) => tracing::warn!("persist: restore failed: {e}"),
+    }
 
     let server = PumpkinServer::new(config.basic, config.advanced, vanilla_data).await;
     server.init_plugins().await;
@@ -75,6 +89,7 @@ async fn run() {
     // Virtual networking: streams arrive from the page over a WASI fd.
     net_bridge::spawn(server.server.clone());
     metrics::spawn(server.server.clone());
+    persist::spawn_autosave(server.server.clone());
 
     // Boot self-test: prove the http.sock bridge reaches Mojang via the proxy.
     if online {
@@ -145,4 +160,5 @@ async fn run() {
     }
 
     server.start().await;
+    persist::save_now("shutdown");
 }

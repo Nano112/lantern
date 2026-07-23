@@ -237,6 +237,86 @@ class MetricsFd extends Fd {
 
 const metricsFd = new MetricsFd();
 
+// state.bin: reads serve the OPFS snapshot loaded at boot; writes buffer the
+// new snapshot and flush it to OPFS on close.
+class PersistFd extends Fd {
+  constructor(initial, onSave) {
+    super();
+    this.data = initial; // Uint8Array
+    this.pos = 0;
+    this.writeBuf = null;
+    this.onSave = onSave;
+  }
+
+  fd_fdstat_get() {
+    const fdstat = new wasi.Fdstat(wasi.FILETYPE_REGULAR_FILE, 0);
+    fdstat.fs_rights_base =
+      BigInt(wasi.RIGHTS_FD_READ) | BigInt(wasi.RIGHTS_FD_WRITE) | BigInt(wasi.RIGHTS_FD_SEEK);
+    return { ret: 0, fdstat };
+  }
+
+  fd_filestat_get() {
+    return {
+      ret: 0,
+      filestat: new wasi.Filestat(0n, wasi.FILETYPE_REGULAR_FILE, BigInt(this.data.length)),
+    };
+  }
+
+  fd_read(len) {
+    const n = Math.min(len, this.data.length - this.pos);
+    if (n <= 0) return { ret: 0, data: new Uint8Array(0) };
+    const out = this.data.slice(this.pos, this.pos + n);
+    this.pos += n;
+    return { ret: 0, data: out };
+  }
+
+  fd_write(chunk) {
+    if (!this.writeBuf) this.writeBuf = [];
+    this.writeBuf.push(chunk.slice());
+    return { ret: 0, nwritten: chunk.byteLength };
+  }
+
+  fd_seek(offset, whence) {
+    const size = BigInt(this.data.length);
+    let target = whence === wasi.WHENCE_SET ? offset
+      : whence === wasi.WHENCE_CUR ? BigInt(this.pos) + offset
+      : size + offset;
+    if (target < 0n) return { ret: wasi.ERRNO_INVAL, offset: 0n };
+    this.pos = Number(target);
+    return { ret: 0, offset: target };
+  }
+
+  fd_close() {
+    if (this.writeBuf) {
+      let total = 0;
+      for (const c of this.writeBuf) total += c.length;
+      const merged = new Uint8Array(total);
+      let off = 0;
+      for (const c of this.writeBuf) { merged.set(c, off); off += c.length; }
+      this.writeBuf = null;
+      this.data = merged; // subsequent reads see the newest snapshot
+      this.onSave(merged);
+    }
+    this.pos = 0;
+    return 0;
+  }
+}
+
+class PersistInode extends Inode {
+  constructor(fdObj) {
+    super();
+    this.fdObj = fdObj;
+  }
+  stat() {
+    return new wasi.Filestat(this.ino, wasi.FILETYPE_REGULAR_FILE, BigInt(this.fdObj.data.length));
+  }
+  path_open(oflags) {
+    if ((oflags & wasi.OFLAGS_TRUNC) === wasi.OFLAGS_TRUNC) this.fdObj.writeBuf = [];
+    this.fdObj.pos = 0;
+    return { ret: 0, fd_obj: this.fdObj };
+  }
+}
+
 function connectProxy() {
   const url = self.location.hostname === "localhost"
     ? "ws://localhost:9091/ws"
@@ -278,29 +358,78 @@ function connectProxy() {
 connectProxy();
 
 const stdin = new QueueStdin();
-const cwd = new PreopenDirectory(".", new Map([
-  ["net.sock", new NetSockInode(netFd)],
-  ["http.sock", new NetSockInode(httpFd)],
-  ["metrics.sock", new NetSockInode(metricsFd)],
-]));
-const farm = new WASIFarm(stdin, new TerminalOut(), new TerminalOut(), [cwd]);
+
+const WORLD_FILE = "lantern-world.bin";
+let opfsWriteChain = Promise.resolve();
+function saveToOpfs(bytes) {
+  opfsWriteChain = opfsWriteChain.then(async () => {
+    const root = await navigator.storage.getDirectory();
+    const handle = await root.getFileHandle(WORLD_FILE, { create: true });
+    const w = await handle.createWritable();
+    await w.write(bytes);
+    await w.close();
+    post({ type: "term", text: `[persist] world saved to OPFS (${(bytes.length / 1024).toFixed(0)} KiB)\n` });
+  }).catch((e) => post({ type: "term", text: `[persist] OPFS save failed: ${e}\n` }));
+}
+
+async function loadFromOpfs(fresh) {
+  try {
+    const root = await navigator.storage.getDirectory();
+    if (fresh) {
+      await root.removeEntry(WORLD_FILE).catch(() => {});
+      return new Uint8Array(0);
+    }
+    const handle = await root.getFileHandle(WORLD_FILE);
+    const file = await handle.getFile();
+    return new Uint8Array(await file.arrayBuffer());
+  } catch {
+    return new Uint8Array(0);
+  }
+}
 
 let runner = null;
+let started = false;
+const pendingStdin = [];
+
 self.onmessage = (e) => {
-  if (e.data.type === "stdin") stdin.push(e.data.line);
-  else if (e.data.type === "init" && !runner) {
-    runner = new Worker(new URL("./runner.js", self.location.href), { type: "module" });
-    runner.postMessage({ wasi_ref: farm.get_ref(), env: e.data.env });
-    runner.onmessage = (ev) => {
-      if (ev.data.status) {
-        post({ type: "status", status: ev.data.status });
-        // A finished server must not squat on the room.
-        if (/exited/.test(ev.data.status)) netFd.ws?.close();
-      }
-      if (ev.data.error) {
-        post({ type: "error", error: ev.data.error });
-        netFd.ws?.close();
-      }
-    };
+  if (e.data.type === "stdin") {
+    if (runner) stdin.push(e.data.line);
+    else pendingStdin.push(e.data.line);
+  } else if (e.data.type === "init" && !started) {
+    started = true;
+    boot(e.data).catch((err) => post({ type: "error", error: String(err) }));
   }
 };
+
+async function boot({ env, fresh }) {
+  const snapshot = await loadFromOpfs(fresh);
+  if (snapshot.length) {
+    post({ type: "term", text: `[persist] loaded ${(snapshot.length / 1024).toFixed(0)} KiB world from OPFS\n` });
+  }
+  const persistFd = new PersistFd(snapshot, saveToOpfs);
+
+  const cwd = new PreopenDirectory(".", new Map([
+    ["net.sock", new NetSockInode(netFd)],
+    ["http.sock", new NetSockInode(httpFd)],
+    ["metrics.sock", new NetSockInode(metricsFd)],
+    ["state.bin", new PersistInode(persistFd)],
+  ]));
+  const farm = new WASIFarm(stdin, new TerminalOut(), new TerminalOut(), [cwd], {
+    allocator_size: 64 * 1024 * 1024, // world snapshots move through here
+  });
+
+  runner = new Worker(new URL("./runner.js", self.location.href), { type: "module" });
+  for (const line of pendingStdin.splice(0)) stdin.push(line);
+  runner.postMessage({ wasi_ref: farm.get_ref(), env });
+  runner.onmessage = (ev) => {
+    if (ev.data.status) {
+      post({ type: "status", status: ev.data.status });
+      // A finished server must not squat on the room.
+      if (/exited/.test(ev.data.status)) netFd.ws?.close();
+    }
+    if (ev.data.error) {
+      post({ type: "error", error: ev.data.error });
+      netFd.ws?.close();
+    }
+  };
+}
