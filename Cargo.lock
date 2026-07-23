@@ -1639,6 +1639,7 @@ version = "0.1.0"
 dependencies = [
  "pumpkin",
  "pumpkin-config",
+ "pumpkin-util",
  "tokio",
  "tracing",
  "wasi",

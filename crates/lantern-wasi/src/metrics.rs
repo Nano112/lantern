@@ -26,8 +26,17 @@ pub fn spawn(server: Arc<Server>) {
             }
             let mem_mb = (core::arch::wasm32::memory_size::<0>() * 64) as f64 / 1024.0;
 
+            let rt = tokio::runtime::Handle::current().metrics();
+            let tasks = rt.num_alive_tasks();
+            // blocking-pool introspection needs tokio_unstable; workers is the
+            // stable proxy (1 on current_thread; blocking threads show in tasks)
+            let blocking = rt.num_workers();
+            let idle_blocking = 0usize;
+            let net_streams = crate::net_bridge::OPEN_STREAMS.load(std::sync::atomic::Ordering::Relaxed);
+            let net_outq = crate::net_bridge::OUT_QUEUE.load(std::sync::atomic::Ordering::Relaxed);
+
             let line = format!(
-                "{{\"mspt\":{mspt:.2},\"players\":{players},\"chunks\":{chunks},\"mem_mb\":{mem_mb:.1},\"uptime_s\":{}}}\n",
+                "{{\"mspt\":{mspt:.2},\"players\":{players},\"chunks\":{chunks},\"mem_mb\":{mem_mb:.1},\"uptime_s\":{},\"tasks\":{tasks},\"blocking\":{blocking},\"idle_blocking\":{idle_blocking},\"net_streams\":{net_streams},\"net_outq\":{net_outq}}}\n",
                 start.elapsed().as_secs()
             );
             crate::net_bridge::fd_write_all(fd, line.as_bytes());

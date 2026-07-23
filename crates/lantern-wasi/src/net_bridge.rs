@@ -13,7 +13,12 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
+/// Live counters for the metrics panel.
+pub static OPEN_STREAMS: AtomicUsize = AtomicUsize::new(0);
+pub static OUT_QUEUE: AtomicUsize = AtomicUsize::new(0);
 
 use pumpkin::net::java::JavaClient;
 use pumpkin::server::Server;
@@ -86,6 +91,7 @@ pub fn spawn(server: Arc<Server>) {
     // Writer: serializes all outbound frames onto the fd.
     tokio::spawn(async move {
         while let Some(f) = out_rx.recv().await {
+            OUT_QUEUE.store(out_rx.len(), Ordering::Relaxed);
             fd_write_all(fd, &f);
         }
     });
@@ -132,6 +138,7 @@ pub fn spawn(server: Arc<Server>) {
                         let (ours, theirs) = tokio::io::duplex(1024 * 1024);
                         let (mut read_half, write_half) = tokio::io::split(ours);
                         conns.insert(sid, write_half);
+                        OPEN_STREAMS.store(conns.len(), Ordering::Relaxed);
 
                         // Outbound pump: server → frames on the fd.
                         let tx = out_tx.clone();
@@ -166,6 +173,7 @@ pub fn spawn(server: Arc<Server>) {
                     MSG_CLOSE => {
                         // Dropping the write half EOFs the client's reader.
                         conns.remove(&sid);
+                        OPEN_STREAMS.store(conns.len(), Ordering::Relaxed);
                         tracing::info!("net_bridge: stream {sid} closed");
                     }
                     other => {

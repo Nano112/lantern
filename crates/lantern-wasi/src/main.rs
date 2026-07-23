@@ -91,5 +91,48 @@ async fn run() {
 
     tracing::info!("lantern: server up — type commands below (try: help, seed, time query daytime)");
 
+    // Worldgen benchmark: LANTERN_BENCH=<radius> generates a (2r+1)^2 chunk
+    // square through the real ticketed pipeline and reports throughput.
+    if let Ok(r) = std::env::var("LANTERN_BENCH") {
+        let radius: i32 = r.parse().unwrap_or(3);
+        let bench_server = server.server.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let world = bench_server.worlds.load()[0].clone();
+            let level = world.level.clone();
+            let total = (2 * radius + 1) * (2 * radius + 1);
+            tracing::info!("bench: requesting {total} chunks (radius {radius})…");
+            let start = std::time::Instant::now();
+            let mut tasks = Vec::new();
+            for x in -radius..=radius {
+                for z in -radius..=radius {
+                    let level = level.clone();
+                    tasks.push(tokio::spawn(async move {
+                        level
+                            .get_or_fetch_chunk(
+                                pumpkin_util::math::vector2::Vector2::new(x, z),
+                                |_| (),
+                            )
+                            .await;
+                    }));
+                }
+            }
+            let mut done = 0;
+            for t in tasks {
+                let _ = t.await;
+                done += 1;
+                if done % 25 == 0 {
+                    let secs = start.elapsed().as_secs_f64();
+                    tracing::info!("bench: {done}/{total} chunks ({:.2}/s)", f64::from(done) / secs);
+                }
+            }
+            let secs = start.elapsed().as_secs_f64();
+            tracing::info!(
+                "bench: DONE {total} chunks in {secs:.1}s = {:.2} chunks/s",
+                f64::from(total) / secs
+            );
+        });
+    }
+
     server.start().await;
 }

@@ -37,8 +37,10 @@ function writeText(text) {
 }
 
 const farmWorker = new Worker("./dist/farm-worker.js", { type: "module" });
-const offline = new URLSearchParams(location.search).has("offline");
-farmWorker.postMessage({ type: "init", env: [`LANTERN_ONLINE=${offline ? "0" : "1"}`] });
+const params = new URLSearchParams(location.search);
+const env = [`LANTERN_ONLINE=${params.has("offline") ? "0" : "1"}`];
+if (params.has("bench")) env.push(`LANTERN_BENCH=${params.get("bench")}`);
+farmWorker.postMessage({ type: "init", env });
 farmWorker.onmessage = (e) => {
   const m = e.data;
   if (m.type === "term") writeText(m.text);
@@ -85,6 +87,13 @@ function onMetrics(d) {
   $("m-chunks").textContent = d.chunks;
   $("m-mem").innerHTML = `${d.mem_mb.toFixed(0)}<span class="unit"> MB</span>`;
   $("m-uptime").textContent = fmtUptime(d.uptime_s);
+  $("m-tasks").textContent = d.tasks ?? "–";
+  $("m-streams").textContent = d.net_streams ?? 0;
+  $("m-outq").textContent = d.net_outq ?? 0;
+  if (prevNet && d.now > prevNet.now) {
+    const rate = (d.chunks - prevNet.chunks) / ((d.now - prevNet.now) / 1000);
+    $("m-genrate").textContent = rate > 0 ? rate.toFixed(1) : "0";
+  }
 
   msptHist.push(d.mspt);
   if (msptHist.length > HISTORY) msptHist.shift();
