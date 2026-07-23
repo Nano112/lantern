@@ -3,6 +3,7 @@
 //! streams injected by the host page (milestone 3). The server console speaks
 //! plain stdin/stdout, which the page bridges to an on-screen terminal.
 
+mod metrics;
 mod net_bridge;
 
 use pumpkin::PumpkinServer;
@@ -66,6 +67,7 @@ async fn run() {
 
     // Virtual networking: streams arrive from the page over a WASI fd.
     net_bridge::spawn(server.server.clone());
+    metrics::spawn(server.server.clone());
 
     // Boot self-test: prove the http.sock bridge reaches Mojang via the proxy.
     if online {

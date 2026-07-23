@@ -10,16 +10,55 @@
   header { display: flex; gap: 1rem; align-items: baseline; padding: 10px 16px; border-bottom: 1px solid #2c2620; }
   h1 { font-size: 15px; margin: 0; color: #f0a030; }
   #status { color: #9a8f7a; }
+  #connect { margin-left: auto; color: #7fb069; }
+  main { flex: 1; display: flex; min-height: 0; }
   #log { flex: 1; overflow-y: auto; padding: 10px 16px; white-space: pre-wrap; word-break: break-all; }
+  #metrics { width: 304px; flex-shrink: 0; border-left: 1px solid #2c2620; overflow-y: auto;
+             padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .tile { background: #1d1913; border: 1px solid #2c2620; border-radius: 6px; padding: 8px 10px; }
+  .tile .k { color: #9a8f7a; font-size: 11px; }
+  .tile .v { font-size: 17px; margin-top: 2px; color: #e8dcc8; }
+  .tile .v .unit { font-size: 11px; color: #9a8f7a; }
+  .card { background: #1d1913; border: 1px solid #2c2620; border-radius: 6px; padding: 8px 10px; }
+  .card .k { color: #9a8f7a; font-size: 11px; display: flex; justify-content: space-between; }
+  .card canvas { width: 100%; height: 56px; display: block; margin-top: 6px; }
+  .legend { display: flex; gap: 10px; font-size: 11px; color: #9a8f7a; margin-top: 4px; }
+  .legend .swatch { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
   #inputbar { display: flex; border-top: 1px solid #2c2620; }
   #prompt { padding: 10px 0 10px 16px; color: #f0a030; }
   #input { flex: 1; background: transparent; border: 0; outline: none; color: inherit;
            font: inherit; padding: 10px 16px 10px 8px; }
+  @media (max-width: 760px) { #metrics { display: none; } }
 </style>
 </head>
 <body>
-<header><h1>🎃 lantern console</h1><div id="status">booting…</div><div id="connect" style="margin-left:auto;color:#7fb069"></div></header>
-<div id="log"></div>
+<header><h1>🎃 lantern console</h1><div id="status">booting…</div><div id="connect"></div></header>
+<main>
+  <div id="log"></div>
+  <aside id="metrics">
+    <div class="tiles">
+      <div class="tile"><div class="k">TPS</div><div class="v" id="m-tps">–</div></div>
+      <div class="tile"><div class="k">MSPT</div><div class="v" id="m-mspt">–</div></div>
+      <div class="tile"><div class="k">players</div><div class="v" id="m-players">–</div></div>
+      <div class="tile"><div class="k">chunks loaded</div><div class="v" id="m-chunks">–</div></div>
+      <div class="tile"><div class="k">wasm memory</div><div class="v" id="m-mem">–</div></div>
+      <div class="tile"><div class="k">uptime</div><div class="v" id="m-uptime">–</div></div>
+    </div>
+    <div class="card">
+      <div class="k"><span>MSPT (2 min)</span><span id="mspt-readout"></span></div>
+      <canvas id="mspt-chart" width="280" height="56"></canvas>
+    </div>
+    <div class="card">
+      <div class="k"><span>network KiB/s (2 min)</span><span id="net-readout"></span></div>
+      <canvas id="net-chart" width="280" height="56"></canvas>
+      <div class="legend">
+        <span><span class="swatch" style="background:#c9812a"></span>in</span>
+        <span><span class="swatch" style="background:#4f9bcb"></span>out</span>
+      </div>
+    </div>
+  </aside>
+</main>
 <div id="inputbar"><span id="prompt">$</span><input id="input" autocomplete="off" spellcheck="false" autofocus placeholder="server command (help, seed, say hi, time query daytime)"></div>
 <script type="module" src="./dist/console-main.js"></script>
 </body>

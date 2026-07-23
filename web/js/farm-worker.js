@@ -68,12 +68,17 @@ class NetBridgeFd extends Fd {
       if (this.txbuf.length < 4 + flen) break;
       const frame = this.txbuf.slice(4, 4 + flen);
       this.txbuf = this.txbuf.slice(4 + flen);
+      this.bytesOut += frame.length;
       if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(frame);
     }
     return { ret: 0, nwritten: data.byteLength };
   }
 
+  bytesIn = 0;
+  bytesOut = 0;
+
   pushFrame(frameBytes) {
+    this.bytesIn += frameBytes.length;
     const prefixed = new Uint8Array(4 + frameBytes.length);
     new DataView(prefixed.buffer).setUint32(0, frameBytes.length);
     prefixed.set(frameBytes, 4);
@@ -195,6 +200,43 @@ class HttpBridgeFd extends Fd {
 
 const httpFd = new HttpBridgeFd();
 
+// One-way telemetry from the server: newline-delimited JSON.
+class MetricsFd extends Fd {
+  linebuf = "";
+
+  fd_fdstat_get() {
+    const fdstat = new wasi.Fdstat(wasi.FILETYPE_CHARACTER_DEVICE, 0);
+    fdstat.fs_rights_base = BigInt(wasi.RIGHTS_FD_READ) | BigInt(wasi.RIGHTS_FD_WRITE);
+    return { ret: 0, fdstat };
+  }
+
+  fd_filestat_get() {
+    return { ret: 0, filestat: new wasi.Filestat(0n, wasi.FILETYPE_CHARACTER_DEVICE, 0n) };
+  }
+
+  fd_read(_len) {
+    return { ret: 0, data: new Uint8Array(0) };
+  }
+
+  fd_write(data) {
+    this.linebuf += new TextDecoder().decode(data);
+    const lines = this.linebuf.split("\n");
+    this.linebuf = lines.pop();
+    for (const line of lines) {
+      try {
+        const m = JSON.parse(line);
+        m.net_in = netFd.bytesIn;
+        m.net_out = netFd.bytesOut;
+        m.now = Date.now();
+        post({ type: "metrics", data: m });
+      } catch { /* partial or malformed line */ }
+    }
+    return { ret: 0, nwritten: data.byteLength };
+  }
+}
+
+const metricsFd = new MetricsFd();
+
 function connectProxy() {
   const url = self.location.hostname === "localhost"
     ? "ws://localhost:9091/ws"
@@ -239,6 +281,7 @@ const stdin = new QueueStdin();
 const cwd = new PreopenDirectory(".", new Map([
   ["net.sock", new NetSockInode(netFd)],
   ["http.sock", new NetSockInode(httpFd)],
+  ["metrics.sock", new NetSockInode(metricsFd)],
 ]));
 const farm = new WASIFarm(stdin, new TerminalOut(), new TerminalOut(), [cwd]);
 

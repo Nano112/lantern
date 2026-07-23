@@ -32,14 +32,14 @@ const MSG_CLOSE: u8 = 2;
 /// wake us, so this bounds added latency per hop.
 const POLL_INTERVAL: Duration = Duration::from_millis(3);
 
-fn open_bridge() -> std::io::Result<u32> {
-    use std::os::fd::{AsRawFd, IntoRawFd};
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(NET_SOCK_PATH)?;
-    let _ = file.as_raw_fd();
+pub(crate) fn open_socket(path: &str) -> std::io::Result<u32> {
+    use std::os::fd::IntoRawFd;
+    let file = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
     Ok(file.into_raw_fd() as u32)
+}
+
+fn open_bridge() -> std::io::Result<u32> {
+    open_socket(NET_SOCK_PATH)
 }
 
 fn fd_read_now(fd: u32, buf: &mut [u8]) -> usize {
@@ -50,7 +50,7 @@ fn fd_read_now(fd: u32, buf: &mut [u8]) -> usize {
     unsafe { wasi::fd_read(fd, &[iov]).unwrap_or(0) }
 }
 
-fn fd_write_all(fd: u32, mut data: &[u8]) {
+pub(crate) fn fd_write_all(fd: u32, mut data: &[u8]) {
     while !data.is_empty() {
         let iov = wasi::Ciovec {
             buf: data.as_ptr(),
