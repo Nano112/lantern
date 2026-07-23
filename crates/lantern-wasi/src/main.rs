@@ -131,6 +131,16 @@ async fn run() {
                 "bench: DONE {total} chunks in {secs:.1}s = {:.2} chunks/s",
                 f64::from(total) / secs
             );
+            let mut stages = pumpkin_world::chunk_system::gen_timing::snapshot();
+            stages.sort_by(|a, b| b.2.total_cmp(&a.2));
+            let total_ms: f64 = stages.iter().map(|s| s.2).sum();
+            for (name, count, ms) in stages {
+                tracing::info!(
+                    "bench:   {name:<16} {ms:>9.1}ms total  {:>7.2}ms/run  x{count}  ({:.0}%)",
+                    ms / count as f64,
+                    ms / total_ms * 100.0
+                );
+            }
         });
     }
 

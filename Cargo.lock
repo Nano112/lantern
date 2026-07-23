@@ -1640,6 +1640,7 @@ dependencies = [
  "pumpkin",
  "pumpkin-config",
  "pumpkin-util",
+ "pumpkin-world",
  "tokio",
  "tracing",
  "wasi",
