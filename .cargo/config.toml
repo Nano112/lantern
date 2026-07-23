@@ -6,4 +6,10 @@ rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
 # (target_feature="atomics") unless stated explicitly. parking_lot_core's
 # thread-parker selection (and anything else cfg-ing on it) needs it visible.
 [target.wasm32-wasip1-threads]
-rustflags = ["-C", "target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128"]
+rustflags = [
+  "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128",
+  # default max shared memory is 1GiB; template-heavy structure gen + a large
+  # world snapshot can exceed it → 'memory access out of bounds' in the
+  # allocator. 2GiB headroom.
+  "-C", "link-arg=--max-memory=2147483648",
+]

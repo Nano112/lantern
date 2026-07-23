@@ -17,6 +17,7 @@ use pumpkin::server::Server;
 
 const STATE_PATH: &str = "state.bin";
 const MAGIC: &[u8; 5] = b"LNTN1";
+const MAGIC_V2: &[u8; 5] = b"LNTN2"; // deflate-compressed archive
 const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Files that must never be captured: bridge sockets and the archive itself.
@@ -31,7 +32,7 @@ pub fn restore() -> std::io::Result<(usize, usize)> {
     // Chunked read: the WASI farm's shared-buffer allocator can't transfer
     // arbitrarily large single reads/writes.
     let mut file = std::fs::File::open(STATE_PATH)?;
-    let mut bytes = Vec::new();
+    let mut bytes: Vec<u8> = Vec::new();
     let mut buf = vec![0u8; 1 << 20];
     loop {
         use std::io::Read;
@@ -46,6 +47,16 @@ pub fn restore() -> std::io::Result<(usize, usize)> {
             std::io::ErrorKind::NotFound,
             "state.bin empty",
         ));
+    }
+    if bytes.len() >= MAGIC_V2.len() && &bytes[..MAGIC_V2.len()] == MAGIC_V2 {
+        use std::io::Read;
+        let mut inflated = Vec::new();
+        flate2::read::DeflateDecoder::new(&bytes[MAGIC_V2.len()..])
+            .read_to_end(&mut inflated)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let mut with_magic = MAGIC.to_vec();
+        with_magic.extend_from_slice(&inflated);
+        bytes = with_magic;
     }
     if bytes.len() < MAGIC.len() || &bytes[..MAGIC.len()] != MAGIC {
         return Err(std::io::Error::new(
@@ -141,7 +152,16 @@ fn snapshot_bytes() -> Vec<u8> {
 }
 
 pub fn save_now(reason: &str) {
-    let bytes = snapshot_bytes();
+    let raw = snapshot_bytes();
+    let mut bytes = MAGIC_V2.to_vec();
+    {
+        use std::io::Write;
+        let mut enc =
+            flate2::write::DeflateEncoder::new(&mut bytes, flate2::Compression::fast());
+        // skip the uncompressed magic; the V2 header replaces it
+        let _ = enc.write_all(&raw[MAGIC.len()..]);
+        let _ = enc.finish();
+    }
     let kb = bytes.len() / 1024;
     let result = (|| -> std::io::Result<()> {
         use std::io::Write;

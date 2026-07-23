@@ -109,6 +109,7 @@ async fn run() {
     // Worldgen benchmark: LANTERN_BENCH=<radius> generates a (2r+1)^2 chunk
     // square through the real ticketed pipeline and reports throughput.
     if let Ok(r) = std::env::var("LANTERN_BENCH") {
+        pumpkin_world::chunk_system::gen_timing::set_enabled(true);
         let radius: i32 = r.parse().unwrap_or(3);
         let bench_server = server.server.clone();
         tokio::spawn(async move {

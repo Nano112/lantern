@@ -69,6 +69,27 @@ wasm builds (applies into the submodule too).
 - ⬜ Threads: chunk pipeline (`rayon`/`crossfire`) currently must stay off-wasm;
   either single-threaded scheduling or SharedArrayBuffer + wasm threads later.
 
+## Worldgen performance (wasm, measured)
+
+Bench harness: `?bench=N` on the console URL (radius-N square through the real
+pipeline; per-stage table printed at the end — probes are no-ops unless bench
+mode enables them). Protocol: discard the first run after deploying a new
+binary (V8 tiering), read run 2+.
+
+State as of 2026-07-24: **~11-13 chunks/s** with 2 gen threads/dim (4 threads
+halves it — pipeline contention). Fixed so far: structure_refs eager sampler
+builds (15.2→4.9ms/run, +46%), Add-fill heap churn, CacheOnce size-flip
+reallocs, 1GiB→2GiB max memory (jigsaw template OOB crash). Neutral: simd128,
+codegen-units=1.
+
+Where the remaining noise time goes: NOT leaf math (independent leaf fills are
+~20ms/bench) — it's DAG interpretation volume: **17M+ node-fill invocations
+per 121 chunks**, dominated by Mul/Min/Max lazy per-element fallbacks that
+recurse the subtree per sample. wasm pays 2-4x native per call. The structural
+fix is a batch-evaluation pass (each node consumes/produces whole arrays with
+reused scratch, no per-element re-dispatch) — upstream-grade refactor, golden
+tests (`cargo test -p pumpkin-world`, 90 tests) are the bit-exactness referee.
+
 ## Gotchas
 
 - The shipped `@oligami/browser_wasi_shim-threads` 0.4.1 has a `poll_oneoff`

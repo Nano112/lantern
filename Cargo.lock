@@ -1637,6 +1637,7 @@ dependencies = [
 name = "lantern-wasi"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "pumpkin",
  "pumpkin-config",
  "pumpkin-util",
