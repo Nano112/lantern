@@ -129,7 +129,7 @@ pub fn spawn(server: Arc<Server>) {
                 match msg_type {
                     MSG_OPEN => {
                         tracing::info!("net_bridge: stream {sid} opened (new client)");
-                        let (ours, theirs) = tokio::io::duplex(256 * 1024);
+                        let (ours, theirs) = tokio::io::duplex(1024 * 1024);
                         let (mut read_half, write_half) = tokio::io::split(ours);
                         conns.insert(sid, write_half);
 

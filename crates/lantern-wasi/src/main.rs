@@ -51,8 +51,15 @@ async fn run() {
     let online = std::env::var("LANTERN_ONLINE").map(|v| v != "0").unwrap_or(true);
     config.advanced.networking.java.online_mode = online;
     config.advanced.networking.java.encryption = online;
-    // Keep the byte stream inspectable while the bridge is young.
-    config.advanced.networking.java.compression.enabled = false;
+    // Compression pays for itself many times over: uncompressed chunk packets
+    // are ~200KB each across the WS bridge. Level 1 = cheapest CPU.
+    config.advanced.networking.java.compression.enabled = true;
+    config.advanced.networking.java.compression.info.level = 1;
+    // A browser server can't generate a 33x33 chunk square in reasonable time;
+    // keep the streamed world small so gameplay packets aren't queued for
+    // minutes behind chunk data.
+    config.advanced.networking.java.view_distance = std::num::NonZeroU8::new(6).unwrap();
+    config.advanced.networking.java.simulation_distance = std::num::NonZeroU8::new(6).unwrap();
     // Plain text into a DIY terminal; no ANSI escapes, no thread-id noise.
     config.advanced.logging.color = false;
     config.advanced.logging.threads = false;
