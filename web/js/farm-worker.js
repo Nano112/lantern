@@ -292,8 +292,15 @@ self.onmessage = (e) => {
     runner = new Worker(new URL("./runner.js", self.location.href), { type: "module" });
     runner.postMessage({ wasi_ref: farm.get_ref(), env: e.data.env });
     runner.onmessage = (ev) => {
-      if (ev.data.status) post({ type: "status", status: ev.data.status });
-      if (ev.data.error) post({ type: "error", error: ev.data.error });
+      if (ev.data.status) {
+        post({ type: "status", status: ev.data.status });
+        // A finished server must not squat on the room.
+        if (/exited/.test(ev.data.status)) netFd.ws?.close();
+      }
+      if (ev.data.error) {
+        post({ type: "error", error: ev.data.error });
+        netFd.ws?.close();
+      }
     };
   }
 };

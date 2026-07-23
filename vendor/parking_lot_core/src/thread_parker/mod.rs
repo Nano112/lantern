@@ -66,11 +66,12 @@ cfg_if! {
     } else if #[cfg(all(target_env = "sgx", target_vendor = "fortanix"))] {
         #[path = "sgx.rs"]
         mod imp;
-    } else if #[cfg(all(
-        target_family = "wasm",
-        target_feature = "atomics"
-    ))] {
-        #[path = "wasm_atomic.rs"]
+    } else if #[cfg(all(target_family = "wasm", target_os = "wasi"))] {
+        // lantern: wasm_atomic needs still-unstable intrinsics (rust#77839) and
+        // stable rustc never surfaces target_feature="atomics" as a cfg. The
+        // generic std Mutex+Condvar parker works on wasip1-threads (std's own
+        // sync primitives use the atomic waits internally).
+        #[path = "generic.rs"]
         mod imp;
     } else if #[cfg(target_family = "wasm")] {
         #[path = "wasm.rs"]

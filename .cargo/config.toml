@@ -1,3 +1,9 @@
 # Applies to everything under lantern/, including the pumpkin submodule.
 [target.wasm32-unknown-unknown]
 rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
+
+# wasip1-threads compiles with atomics but rustc doesn't surface the cfg
+# (target_feature="atomics") unless stated explicitly. parking_lot_core's
+# thread-parker selection (and anything else cfg-ing on it) needs it visible.
+[target.wasm32-wasip1-threads]
+rustflags = ["-C", "target-feature=+atomics,+bulk-memory,+mutable-globals"]
