@@ -58,10 +58,14 @@ async function fetchSchematic() {
   try {
     const u = new URL(raw, location.href);
     if (u.hostname.endsWith("schemat.io")) {
+      // A schematic PAGE link (schemat.io/schematics/{id}) isn't the file —
+      // translate it to the API download endpoint.
+      const page = u.pathname.match(/^\/schematics\/([A-Za-z0-9_-]+)\/?$/);
+      const path = page ? `/api/v1/schematics/${page[1]}/download` : u.pathname;
       const base = location.hostname === "localhost"
         ? "http://localhost:9091"
         : `https://${location.hostname}:9443`;
-      url = `${base}/api/schematio${u.pathname}${u.search}`;
+      url = `${base}/api/schematio${path}${page ? "" : u.search}`;
     }
   } catch { /* relative path — leave as-is */ }
   writeText(`[schem] fetching ${raw}…\n`);
@@ -71,6 +75,12 @@ async function fetchSchematic() {
     return null;
   }
   const buf = new Uint8Array(await resp.arrayBuffer());
+  // Sniff: gzip (1f 8b) or bare NBT compound (0x0a) is a schematic; '<' or '{'
+  // means we fetched a web page or an API error instead.
+  if (buf[0] === 0x3c || buf[0] === 0x7b) {
+    writeText(`[schem] that URL returned ${buf[0] === 0x3c ? "HTML" : "JSON"}, not a schematic file — check the link\n`);
+    return null;
+  }
   writeText(`[schem] ${(buf.length / 1024).toFixed(1)} KiB downloaded\n`);
   return buf;
 }
