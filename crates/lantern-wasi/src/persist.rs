@@ -20,12 +20,16 @@ const MAGIC: &[u8; 5] = b"LNTN1";
 const MAGIC_V2: &[u8; 5] = b"LNTN2"; // deflate-compressed archive
 const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Files that must never be captured: bridge sockets and the archive itself.
+/// Files that must never be captured: bridge sockets, the archive itself,
+/// transient inputs (a stale import.schem restored over a fresh one shadows
+/// the user's download), and logs.
 fn skip(path: &Path) -> bool {
+    let p = path.to_string_lossy();
+    let p = p.trim_start_matches("./");
     matches!(
-        path.to_string_lossy().trim_start_matches("./"),
-        "state.bin" | "net.sock" | "http.sock" | "metrics.sock"
-    )
+        p,
+        "state.bin" | "net.sock" | "http.sock" | "metrics.sock" | "import.schem"
+    ) || p.starts_with("logs")
 }
 
 pub fn restore() -> std::io::Result<(usize, usize)> {
