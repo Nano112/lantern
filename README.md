@@ -1,112 +1,141 @@
 # 🎃 lantern
 
-**Pumpkin, but in your browser.** [Pumpkin](https://pumpkinmc.org) is a Minecraft
-server written in Rust — which, unlike the JVM servers, has a first-class path to
-WebAssembly. lantern is a thin harness around a lightly-patched Pumpkin fork that
-compiles it for the web: Pumpkin's team maintains the gameplay (worldgen, mob AI,
-physics, protocol); lantern maintains only the platform layer (network transport,
-storage, timers).
+**A real Minecraft Java server, running in a browser tab.**
 
-Prior art: [Schem-at/Aero](https://github.com/Schem-at/Aero) proved the
-browser-server concept but meant maintaining an entire server implementation.
-lantern's bet is that piggybacking Pumpkin keeps the maintained surface tiny.
+lantern compiles [Pumpkin](https://pumpkinmc.org) — a Minecraft 26.2 server
+written in Rust — to `wasm32-wasip1-threads` and runs it in the browser on web
+workers with shared memory. Real Minecraft clients join through a TCP↔WebSocket
+proxy. Worlds persist in the browser's own storage. Schematics from
+[schemat.io](https://schemat.io) load as instant worlds via
+[Nucleation](https://github.com/Schem-at/Nucleation).
 
-## Layout
+```
+Minecraft Java 26.2 client
+  │ TCP :25570
+  ▼
+Go proxy (vendored from Schem-at/Aero) ── also reverse-proxies Mojang auth + schemat.io
+  │ WebSocket (multiplexed streams)
+  ▼
+Browser page ── farm worker (WASI host: fs, stdio, sockets-over-fd, OPFS persistence)
+  │ SharedArrayBuffer + web workers (one per server thread)
+  ▼
+Pumpkin server (wasm32-wasip1-threads) ── tick loop, worldgen, mobs, redstone…
+  └─ Nucleation (schematic parsing, later: SDF/OSM/simulation)
+```
 
-- `pumpkin/` — git submodule → [Nano112/Pumpkin](https://github.com/Nano112/Pumpkin),
-  branch `lantern` (fork of Pumpkin-MC/Pumpkin). Carries the wasm patches; kept
-  minimal and upstream-mergeable (everything is `#[cfg(target_family = "wasm")]`-gated
-  or per-target Cargo deps, native builds are unaffected).
-- `crates/lantern-web` — wasm-bindgen entry point. Milestone 1 exposes Pumpkin's
-  vanilla world generation to JS (`LanternWorld::chunk_surface`).
-- `web/` — demo page. `wasm-pack build crates/lantern-web --target web --out-dir ../../web/pkg --release`,
-  then serve `web/` and watch vanilla overworld terrain generate on a canvas.
-- `proxy/` — (planned) Aero-style bridge so real Java Edition clients can reach a
-  browser-hosted server: browser ⇄ WebSocket/WebRTC ⇄ proxy ⇄ TCP :25565.
+## What works
 
-## Fork patches so far (branch `lantern`)
+- **Authenticated online-mode joins** — encryption, Mojang `hasJoined`:
+  HTTP calls tunnel from wasm through the page to the proxy's CORS'd
+  Mojang passthrough.
+- **The gameplay stack Pumpkin implements** — worldgen (bit-exact vanilla
+  seeds), chunk streaming, commands, chat. The server console is bridged to an
+  on-page terminal, next to a live metrics panel (TPS/MSPT, tasks, queues,
+  net rates, sparklines).
+- **Persistent worlds** — the in-wasm filesystem is snapshotted (deflate) to
+  OPFS every 60 s and on shutdown; reloading the tab restores the same world,
+  same seed. `?fresh=1` wipes.
+- **Schematics as worlds** — `?schem=<schemat.io url>&gen=void` boots a void
+  world and pastes the build (measured: ~98 k blocks in 0.5 s, zero unknown
+  block states — Nucleation's blockpedia and Pumpkin both target MC 26.2).
+- **~11–13 chunks/s** vanilla worldgen in wasm (2 gen threads; measured, see
+  perf notes below).
 
-| Where | What | Why |
-| --- | --- | --- |
-| workspace `Cargo.toml` | `uuid` + `js` feature | wasm randomness (no-op on native) |
-| `pumpkin-util` | `compat::{fs, time}` module | re-exports tokio on native; in-memory async FS + pass-through timeout on wasm |
-| `pumpkin-util` | `ureq` + `fetch_oidc_jwks` gated to native | native TLS/socket HTTP; online-mode auth is meaningless in-browser |
-| `pumpkin-world` | tokio features split per-target; `tokio::fs`/`tokio::time` call sites → `compat::` | wasm tokio has no fs/time/threads |
-| `pumpkin-protocol` | tokio `net` + Bedrock `UdpSocket` path gated to native | mio doesn't exist on wasm |
+## Repository layout
 
-`.cargo/config.toml` at the repo root sets `--cfg getrandom_backend="wasm_js"` for
-wasm builds (applies into the submodule too).
+| Path | What |
+|---|---|
+| `pumpkin/` | submodule → [Nano112/Pumpkin](https://github.com/Nano112/Pumpkin) branch `lantern` — the fork. Every patch is `cfg`-gated or per-target; native builds are unaffected and stay green. |
+| `crates/lantern-wasi` | the wasm entry binary: boots Pumpkin, virtual networking (`net.sock`), HTTP bridge (`http.sock`), metrics (`metrics.sock`), OPFS persistence (`state.bin`), schematic import, worldgen bench |
+| `crates/lantern-web` | milestone-1 demo: worldgen rendered to a canvas via wasm-bindgen |
+| `web/` | console page + farm worker (WASI shim host) + esbuild bundles |
+| `proxy/` | Go TCP↔WebSocket proxy, vendored from [Schem-at/Aero](https://github.com/Schem-at/Aero), extended with CORS'd reverse proxies for Mojang APIs and schemat.io |
+| `vendor/parking_lot_core` | patched: wasm needs a working thread parker on stable Rust (upstream gates it behind nightly; the panicking fallback aborts on first contended lock) |
 
-## Status
+## Running it
 
-- ✅ `pumpkin-world`, `pumpkin-protocol`, `pumpkin-util`, `pumpkin-data`,
-  `pumpkin-nbt`, `pumpkin-config` compile for `wasm32-unknown-unknown`;
-  native builds still green.
-- ✅ Milestone 1: vanilla overworld chunk generation runs in the browser
-  (single-threaded `generate_single_chunk` path — no tokio runtime needed).
-- ✅ Milestone 2: the full server runs in the browser. Target is
-  `wasm32-wasip1-threads` (real threads via web workers + SharedArrayBuffer,
-  real clocks — Pumpkin's thread-based chunk pipeline runs unmodified).
-  `crates/lantern-wasi` boots the server with networking disabled; the page
-  (`web/console.html`) hosts a WASI farm (`@oligami/browser_wasi_shim-threads`)
-  and bridges stdin/stdout to an on-screen server console. Tick loop runs at
-  20 TPS; `seed`, `time query`, `difficulty`, … all work.
-  Build: `cargo build --target wasm32-wasip1-threads -p lantern-wasi --release`,
-  copy `lantern.wasm` into `web/`, bundle `web/js/*` with esbuild into
-  `web/dist/`, serve `web/` with `serve.py` (COOP/COEP headers required).
-- ✅ Milestone 3 (networking): real Minecraft clients reach the browser server.
-  Chain: MC client → `proxy/` (vendored Aero Go proxy, TCP :25570) → WebSocket
-  (`:9091/ws`, wss via tailscale serve :9443) → page `NetBridgeFd` (mounted at
-  `./net.sock` in the WASI cwd) → `lantern-wasi::net_bridge` (Aero's mux
-  framing + u32 length prefix over the fd) → `tokio::io::duplex` →
-  `JavaClient::new_virtual` → `pumpkin::run_java_client`.
-  Verified end-to-end: server-list status ping returns full JSON; offline-mode
-  login reaches Login Success + configuration state. Browser config forces
-  offline mode (no Mojang HTTP on wasm), encryption+compression off for now.
-- ⬜ Full join (play state, chunk streaming to a real client) — untested; then
-  re-enable compression (+ maybe encryption), OPFS persistence, plugins.
-- ⬜ Persistence: swap the in-memory `compat::fs` store for OPFS.
-- ⬜ Threads: chunk pipeline (`rayon`/`crossfire`) currently must stay off-wasm;
-  either single-threaded scheduling or SharedArrayBuffer + wasm threads later.
+Prereqs: Rust ≥ 1.95 with `wasm32-wasip1-threads`, Go, Node, Chrome
+(SharedArrayBuffer requires cross-origin isolation **and** a secure context —
+`localhost` or HTTPS, e.g. `tailscale serve`).
 
-## Worldgen performance (wasm, measured)
+```sh
+git clone --recurse-submodules <this repo>   # pumpkin has a NESTED submodule (pumpkin-plugin-wit)
+cargo build --target wasm32-wasip1-threads -p lantern-wasi --release
+cp target/wasm32-wasip1-threads/release/lantern.wasm web/
 
-Bench harness: `?bench=N` on the console URL (radius-N square through the real
-pipeline; per-stage table printed at the end — probes are no-ops unless bench
-mode enables them). Protocol: discard the first run after deploying a new
-binary (V8 tiering), read run 2+.
+cd web && npm install
+# re-apply the shim patch (see Gotchas) after any npm install
+npx esbuild js/console-main.js --bundle --format=esm --outfile=dist/console-main.js
+npx esbuild js/farm-worker.js  --bundle --format=esm --outfile=dist/farm-worker.js
+npx esbuild js/runner.js       --bundle --format=esm --outfile=dist/runner.js
+npx esbuild js/thread_spawn.js --bundle --format=esm --outfile=dist/thread_spawn.js
+python3 serve.py 8932          # COOP/COEP headers + ETag revalidation
 
-State as of 2026-07-24: **~11-13 chunks/s** with 2 gen threads/dim (4 threads
-halves it — pipeline contention). Fixed so far: structure_refs eager sampler
-builds (15.2→4.9ms/run, +46%), Add-fill heap churn, CacheOnce size-flip
-reallocs, 1GiB→2GiB max memory (jigsaw template OOB crash). Neutral: simd128,
-codegen-units=1.
+cd ../proxy && go build ./cmd/proxy
+./proxy -port 25570 -api-port 9091 -domain <host> -web-port 0
+```
 
-Where the remaining noise time goes: NOT leaf math (independent leaf fills are
-~20ms/bench) — it's DAG interpretation volume: **17M+ node-fill invocations
-per 121 chunks**, dominated by Mul/Min/Max lazy per-element fallbacks that
-recurse the subtree per sample. wasm pays 2-4x native per call. The structural
-fix is a batch-evaluation pass (each node consumes/produces whole arrays with
-reused scratch, no per-element re-dispatch) — upstream-grade refactor, golden
-tests (`cargo test -p pumpkin-world`, 90 tests) are the bit-exactness referee.
+Open `http://localhost:8932/console.html`, then point a Minecraft Java 26.2
+client at `<host>:25570`.
+
+URL params: `?offline=1` (cracked/bot access), `?fresh=1` (wipe saved world),
+`?schem=<url>` (+ `&gen=void&y=-63`), `?bench=N` (worldgen benchmark),
+`?gen=void|flat`.
+
+> `crates/lantern-wasi` currently depends on Nucleation by local path — point
+> it at your checkout of [Schem-at/Nucleation](https://github.com/Schem-at/Nucleation).
+
+## Performance notes (all measured, wasm, M-series)
+
+- ~11–13 chunks/s through the real pipeline. **2 gen threads is the optimum;
+  4 halves throughput** (pipeline contention).
+- Biggest win so far: `set_structure_references` eagerly rebuilt two
+  noise-router component stacks per call — made lazy: 15.2 → 4.9 ms/run,
+  **+46 % total throughput** (applies to native Pumpkin too).
+- Remaining noise cost is **DAG interpretation volume** (~17 M node-fill
+  invocations per 121 chunks, one per node per column/cell pass; leaf math is
+  nearly free). Conditional fills are already hybrid batch/lazy
+  (bit-exact, pooled scratch buffers); the next levers are plane-sized passes
+  and DAG fusion. `simd128` is enabled but neutral until then.
+- Per-stage profiler built in: `?bench=N` prints the table (probes are no-ops
+  outside bench mode). Native comparison: `cargo test --release -p
+  pumpkin-world --test stage_timing -- --nocapture --ignored`.
+
+## Bugs found on the way (fixed in the fork, upstream-relevant)
+
+- **Flat-world scheduler livelock**: Flat-generator arms for
+  `StructureStart`/`StructureReferences` never advanced the chunk stage
+  marker → the scheduler re-queued the same dependency pyramid forever.
+- **`MOJANG_SERVICES_URL` double-slash** breaking key fetches behind proxies.
+- **parking_lot on wasm** silently selects a parker that aborts on first
+  contended lock when built on stable (see `vendor/`).
+- wasm needs `--max-memory` raised (default 1 GiB max; template-heavy
+  structure gen OOMs into `memory access out of bounds`).
+
+Known wart: chunk tickets filed in the scheduler's first ~2 s can be missed
+(init race, worked around with a settle delay; not yet root-caused).
 
 ## Gotchas
 
-- The shipped `@oligami/browser_wasi_shim-threads` 0.4.1 has a `poll_oneoff`
-  bug against `@bjorn3/browser_wasi_shim` 0.4.2 (`s.precision` is undefined →
-  BigInt TypeError in every `thread::sleep`). We patch `node_modules` before
-  bundling — see README-web notes / re-apply after `npm install`.
-- Console input: browser stdin is a polled mailbox; the fork treats empty
-  stdin reads as "no input yet" on wasm (never EOF).
+- Clone with `--recurse-submodules`: Pumpkin itself has a nested
+  `pumpkin-plugin-wit` submodule; without it the main crate fails with 35
+  `cannot find pumpkin in v0_1` errors.
+- `@oligami/browser_wasi_shim-threads` 0.4.x has a `poll_oneoff` bug against
+  `@bjorn3/browser_wasi_shim` 0.4.2 (`s.precision` undefined → BigInt
+  TypeError in every `thread::sleep`). Patch `node_modules` before bundling:
+  treat missing `precision` as `0n`.
+- The page must be cross-origin isolated **and** on a secure context, or
+  SharedArrayBuffer doesn't exist. `serve.py` sends the headers; use
+  `localhost` or HTTPS.
+- Chrome only for now (needs `Atomics.waitAsync`).
 
-- Clone with `git submodule update --init --recursive` — Pumpkin itself has a
-  nested submodule (`pumpkin-plugin-wit`, the WIT plugin interfaces); without it
-  the main `pumpkin` crate fails with 35 `cannot find pumpkin in v0_1` errors.
-- Native server: `cargo build --release -p pumpkin` inside `pumpkin/`, run the
-  binary from `run/` (config + world land in cwd). Targets MC Java 26.2,
-  accepts clients ≥ 1.20.5.
+## Credits
 
-- Pumpkin requires a recent stable Rust (`rust-version = 1.95`+).
-- `Chunk` returns either `Proto` or `Level`; lantern-web handles both.
-- Time on wasm is a stub (`compat::time::timeout` never elapses) — fine while
-  single-threaded and in-memory; needs a JS-timer driver for the real tick loop.
+- [Pumpkin](https://github.com/Pumpkin-MC/Pumpkin) — the server. lantern's
+  whole bet is riding their gameplay work; fork patches are kept
+  upstream-mergeable.
+- [Schem-at/Aero](https://github.com/Schem-at/Aero) — the proxy and prior art
+  for browser-hosted Minecraft.
+- [Nucleation](https://github.com/Schem-at/Nucleation) — schematic engine.
+- [browser_wasi_shim](https://github.com/bjorn3/browser_wasi_shim) +
+  `@oligami/browser_wasi_shim-threads` — the WASI host.
