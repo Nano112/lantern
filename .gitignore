@@ -1,2 +1,6 @@
 target/
 web/pkg/
+proxy/proxy
+proxy/certs/
+run/
+web/test.schem
