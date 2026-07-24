@@ -40,7 +40,49 @@ const farmWorker = new Worker("./dist/farm-worker.js", { type: "module" });
 const params = new URLSearchParams(location.search);
 const env = [`LANTERN_ONLINE=${params.has("offline") ? "0" : "1"}`];
 if (params.has("bench")) env.push(`LANTERN_BENCH=${params.get("bench")}`);
-farmWorker.postMessage({ type: "init", env, fresh: params.has("fresh") });
+
+// Schematic-as-world: ?schem=<url> fetches the file (schemat.io URLs are
+// routed through the proxy to dodge CORS) and boots a void world around it.
+// ?gen=void|flat forces the generator without a schematic too.
+// NOTE: void/flat currently livelocks the chunk scheduler on wasm (upstream
+// bug, reproduced; noise is unaffected) — schematics default to a noise world
+// pasted high up until that's fixed. ?gen=void to experiment anyway.
+const gen = params.get("gen");
+if (gen && gen !== "normal") env.push(`LANTERN_WORLDGEN=${gen}`);
+if (params.has("schem")) env.push(`LANTERN_SCHEM_Y=${params.get("y") ?? (gen === "void" ? "-63" : "100")}`);
+
+async function fetchSchematic() {
+  const raw = params.get("schem");
+  if (!raw) return null;
+  let url = raw;
+  try {
+    const u = new URL(raw, location.href);
+    if (u.hostname.endsWith("schemat.io")) {
+      const base = location.hostname === "localhost"
+        ? "http://localhost:9091"
+        : `https://${location.hostname}:9443`;
+      url = `${base}/api/schematio${u.pathname}${u.search}`;
+    }
+  } catch { /* relative path — leave as-is */ }
+  writeText(`[schem] fetching ${raw}…\n`);
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    writeText(`[schem] fetch failed: HTTP ${resp.status}\n`);
+    return null;
+  }
+  const buf = new Uint8Array(await resp.arrayBuffer());
+  writeText(`[schem] ${(buf.length / 1024).toFixed(1)} KiB downloaded\n`);
+  return buf;
+}
+
+fetchSchematic()
+  .catch((e) => { writeText(`[schem] ${e}\n`); return null; })
+  .then((schem) => {
+    farmWorker.postMessage(
+      { type: "init", env, fresh: params.has("fresh"), schem },
+      schem ? [schem.buffer] : [],
+    );
+  });
 farmWorker.onmessage = (e) => {
   const m = e.data;
   if (m.type === "term") writeText(m.text);

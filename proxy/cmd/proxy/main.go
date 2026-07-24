@@ -180,6 +180,8 @@ func main() {
 	apiMux.Handle("/api/mojang/", corsWrap(mojangLimiter.HTTPMiddleware(hostProxy("https://sessionserver.mojang.com", "/api/mojang"))))
 	apiMux.Handle("/api/mojang-services/", corsWrap(mojangLimiter.HTTPMiddleware(hostProxy("https://api.minecraftservices.com", "/api/mojang-services"))))
 	apiMux.Handle("/api/mojang-api/", corsWrap(mojangLimiter.HTTPMiddleware(hostProxy("https://api.mojang.com", "/api/mojang-api"))))
+	// lantern: schematic fetching for the in-browser schematic-viewer worlds.
+	apiMux.Handle("/api/schematio/", corsWrap(mojangLimiter.HTTPMiddleware(hostProxy("https://schemat.io", "/api/schematio"))))
 
 	apiMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")

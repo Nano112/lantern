@@ -1,7 +1,7 @@
 // lantern farm worker: hosts the WASI farm (fs + stdio + net bridge) and the
 // proxy WebSocket OFF the main thread, so page rendering and background-tab
 // throttling never stall server I/O. The page talks to us via postMessage.
-import { Fd, Inode, PreopenDirectory, wasi } from "@bjorn3/browser_wasi_shim";
+import { Fd, File, Inode, PreopenDirectory, wasi } from "@bjorn3/browser_wasi_shim";
 import { WASIFarm } from "@oligami/browser_wasi_shim-threads";
 
 const post = (msg) => self.postMessage(msg);
@@ -401,19 +401,21 @@ self.onmessage = (e) => {
   }
 };
 
-async function boot({ env, fresh }) {
+async function boot({ env, fresh, schem }) {
   const snapshot = await loadFromOpfs(fresh);
   if (snapshot.length) {
     post({ type: "term", text: `[persist] loaded ${(snapshot.length / 1024).toFixed(0)} KiB world from OPFS\n` });
   }
   const persistFd = new PersistFd(snapshot, saveToOpfs);
 
-  const cwd = new PreopenDirectory(".", new Map([
+  const cwdEntries = new Map([
     ["net.sock", new NetSockInode(netFd)],
     ["http.sock", new NetSockInode(httpFd)],
     ["metrics.sock", new NetSockInode(metricsFd)],
     ["state.bin", new PersistInode(persistFd)],
-  ]));
+  ]);
+  if (schem?.length) cwdEntries.set("import.schem", new File(schem));
+  const cwd = new PreopenDirectory(".", cwdEntries);
   const farm = new WASIFarm(stdin, new TerminalOut(), new TerminalOut(), [cwd], {
     allocator_size: 64 * 1024 * 1024, // world snapshots move through here
   });

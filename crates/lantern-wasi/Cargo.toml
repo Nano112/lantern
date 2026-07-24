@@ -13,6 +13,9 @@ pumpkin = { path = "../../pumpkin/pumpkin" }
 pumpkin-config = { path = "../../pumpkin/pumpkin-config" }
 pumpkin-util = { path = "../../pumpkin/pumpkin-util" }
 pumpkin-world = { path = "../../pumpkin/pumpkin-world" }
+pumpkin-data = { path = "../../pumpkin/pumpkin-data" }
+# Schem-at/Nucleation — schematic parsing (and later: SDF, OSM, redstone sim)
+nucleation = { path = "/Users/harrison/code/nucleation", default-features = false }
 tokio = { version = "1.53", default-features = false, features = ["macros", "rt"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 wasi = "0.11"

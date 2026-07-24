@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/lantern-web", "crates/lantern-wasi"]
+members = ["crates/lantern-web", "crates/lantern-wasi", "crates/schem-gen"]
 # The pumpkin submodule is its own workspace; path deps reach into it.
 exclude = ["pumpkin"]
 
