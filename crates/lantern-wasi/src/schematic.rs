@@ -1,30 +1,177 @@
-//! lantern × Nucleation: load a schematic as the world.
+//! lantern × Nucleation: schematics as worlds, hot-swappable.
 //!
-//! The page mounts schematic bytes at `./import.schem` (fetched from
-//! schemat.io or any URL). Nucleation parses it in-wasm; blocks are pasted
-//! into the overworld above the floor, chunk by chunk, through the normal
-//! level API so lighting/saving/persistence all apply.
+//! Boot: the page mounts schematic bytes at `./import.schem`; they're pasted
+//! once the scheduler is up. Live: the page pushes replacement schematics as
+//! `[u32 BE len][bytes]` frames over `schem.sock` — the previous build's
+//! exact block positions (persisted in `schem_prev.bin`, so it survives
+//! reloads) are cleared, the new one is pasted, and every affected chunk is
+//! re-sent to connected Java clients so the swap is visible immediately.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
+use pumpkin::net::ClientPlatform;
 use pumpkin::server::Server;
+use pumpkin_data::Block;
+use pumpkin_protocol::java::client::play::{CChunkBatchEnd, CChunkBatchStart, CChunkData};
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector2::Vector2;
 use pumpkin_util::math::vector3::Vector3;
 use pumpkin_world::generation::structure::template::{BlockStateResolver, PaletteEntry};
 
 const IMPORT_PATH: &str = "import.schem";
+const PREV_POSITIONS_PATH: &str = "schem_prev.bin";
+const LIVE_SOCK: &str = "schem.sock";
 
-/// Paste height. Void floor sits at -64, so -63 is "on the floor"; on noise
-/// worlds something higher keeps the build visible. Page overrides via
-/// LANTERN_SCHEM_Y.
+/// Paste height: default sits one above the void-world bedrock floor; the
+/// page overrides via LANTERN_SCHEM_Y for other generators.
 fn base_y() -> i32 {
     std::env::var("LANTERN_SCHEM_Y")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(100)
+        .unwrap_or(-63)
 }
 
+fn load_prev_positions() -> Vec<(i32, i32, i32)> {
+    let Ok(bytes) = std::fs::read(PREV_POSITIONS_PATH) else {
+        return Vec::new();
+    };
+    bytes
+        .chunks_exact(12)
+        .map(|c| {
+            (
+                i32::from_be_bytes([c[0], c[1], c[2], c[3]]),
+                i32::from_be_bytes([c[4], c[5], c[6], c[7]]),
+                i32::from_be_bytes([c[8], c[9], c[10], c[11]]),
+            )
+        })
+        .collect()
+}
+
+fn save_prev_positions(positions: &[(i32, i32, i32)]) {
+    let mut out = Vec::with_capacity(positions.len() * 12);
+    for (x, y, z) in positions {
+        out.extend_from_slice(&x.to_be_bytes());
+        out.extend_from_slice(&y.to_be_bytes());
+        out.extend_from_slice(&z.to_be_bytes());
+    }
+    if let Err(e) = std::fs::write(PREV_POSITIONS_PATH, &out) {
+        tracing::warn!("schematic: failed to persist paste positions: {e}");
+    }
+}
+
+async fn paste(server: &Arc<Server>, bytes: &[u8]) {
+    tracing::info!("schematic: parsing {} KiB…", bytes.len() / 1024);
+    let schem = match nucleation::UniversalSchematic::from_schematic(bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("schematic: parse failed: {e}");
+            return;
+        }
+    };
+
+    let base_y = base_y();
+    let world = server.worlds.load()[0].clone();
+    let level = world.level.clone();
+    let air = Block::AIR.default_state.id;
+    let mut touched_chunks: HashSet<(i32, i32)> = HashSet::new();
+
+    // 1. Clear the previous build (exact positions, so player edits and the
+    //    floor survive).
+    let prev = load_prev_positions();
+    if !prev.is_empty() {
+        tracing::info!("schematic: clearing previous build ({} blocks)…", prev.len());
+        let mut by_chunk: HashMap<(i32, i32), Vec<(i32, i32, i32)>> = HashMap::new();
+        for pos in prev {
+            by_chunk.entry((pos.0 >> 4, pos.2 >> 4)).or_default().push(pos);
+        }
+        for ((cx, cz), blocks) in by_chunk {
+            level.get_or_fetch_chunk(Vector2::new(cx, cz), |_| ()).await;
+            for (x, y, z) in blocks {
+                level.set_block_state(&BlockPos(Vector3::new(x, y, z)), air);
+            }
+            touched_chunks.insert((cx, cz));
+        }
+    }
+
+    // 2. Paste the new one.
+    let mut by_chunk: HashMap<(i32, i32), Vec<(i32, i32, i32, u16)>> = HashMap::new();
+    let mut positions = Vec::new();
+    let mut unknown = 0usize;
+    for (pos, block) in schem.iter_blocks() {
+        if block.name.as_str() == "minecraft:air" || block.name.as_str() == "air" {
+            continue;
+        }
+        let entry = PaletteEntry::with_properties(
+            block.name.to_string(),
+            block
+                .properties
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        );
+        let Some(state) = BlockStateResolver::resolve_simple(&entry) else {
+            unknown += 1;
+            continue;
+        };
+        let (x, y, z) = (pos.x, pos.y + base_y, pos.z);
+        by_chunk
+            .entry((x >> 4, z >> 4))
+            .or_default()
+            .push((x, y, z, state.id.as_u16()));
+        positions.push((x, y, z));
+    }
+
+    let total = positions.len();
+    tracing::info!(
+        "schematic: pasting {total} blocks into {} chunks ({unknown} unknown skipped)…",
+        by_chunk.len()
+    );
+    let start = std::time::Instant::now();
+    for ((cx, cz), blocks) in by_chunk {
+        level.get_or_fetch_chunk(Vector2::new(cx, cz), |_| ()).await;
+        for (x, y, z, state_id) in blocks {
+            level.set_block_state(
+                &BlockPos(Vector3::new(x, y, z)),
+                pumpkin_data::BlockStateId::new_or_air(state_id),
+            );
+        }
+        touched_chunks.insert((cx, cz));
+    }
+    save_prev_positions(&positions);
+
+    // 3. Re-send every touched chunk so online players see the swap.
+    let players = world.players.load();
+    if !players.is_empty() {
+        for player in players.iter() {
+            if let ClientPlatform::Java(java_client) = player.client.as_ref() {
+                java_client.send_packet_now(&CChunkBatchStart).await;
+                let mut sent = 0u16;
+                for (cx, cz) in &touched_chunks {
+                    let chunk = level
+                        .get_or_fetch_chunk(Vector2::new(*cx, *cz), std::clone::Clone::clone)
+                        .await;
+                    java_client.send_packet_now(&CChunkData(&chunk)).await;
+                    sent += 1;
+                }
+                java_client.send_packet_now(&CChunkBatchEnd::new(sent)).await;
+            }
+        }
+        tracing::info!(
+            "schematic: refreshed {} chunks for {} player(s)",
+            touched_chunks.len(),
+            players.len()
+        );
+    }
+
+    tracing::info!(
+        "schematic: done — {total} blocks in {:.1}s. Fly to 0 {base_y} 0.",
+        start.elapsed().as_secs_f64(),
+    );
+}
+
+/// Boot-time import from ./import.schem (mounted by the page pre-boot).
 pub fn spawn_import(server: Arc<Server>) {
     let Ok(bytes) = std::fs::read(IMPORT_PATH) else {
         return;
@@ -35,73 +182,35 @@ pub fn spawn_import(server: Arc<Server>) {
     tokio::spawn(async move {
         // Same settle delay the bench uses: a ticket filed in the first
         // instants of the scheduler's life can be missed (init race).
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        tracing::info!("schematic: parsing {} KiB import…", bytes.len() / 1024);
-        let schem = match nucleation::UniversalSchematic::from_schematic(&bytes) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!("schematic: parse failed: {e}");
-                return;
-            }
-        };
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        paste(&server, &bytes).await;
+    });
+}
 
-        let base_y = base_y();
-        let world = server.worlds.load()[0].clone();
-        let level = world.level.clone();
-
-        // Group blocks by chunk so each chunk is fetched (and its ticket held)
-        // exactly once while we write into it.
-        let mut by_chunk: std::collections::HashMap<(i32, i32), Vec<(i32, i32, i32, u16)>> =
-            std::collections::HashMap::new();
-        let mut unknown = 0usize;
-        let mut total = 0usize;
-
-        for (pos, block) in schem.iter_blocks() {
-            if block.name.as_str() == "minecraft:air" || block.name.as_str() == "air" {
+/// Live reload: framed schematics pushed by the page over schem.sock.
+pub fn spawn_live_reload(server: Arc<Server>) {
+    let Ok(fd) = crate::net_bridge::open_socket(LIVE_SOCK) else {
+        return;
+    };
+    tokio::spawn(async move {
+        let mut acc: Vec<u8> = Vec::new();
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let n = crate::net_bridge::fd_read_now(fd, &mut buf);
+            if n == 0 {
+                tokio::time::sleep(Duration::from_millis(500)).await;
                 continue;
             }
-            let entry = PaletteEntry::with_properties(
-                block.name.to_string(),
-                block
-                    .properties
-                    .iter()
-                    .map(|(k, v)| (k.to_string(), v.to_string()))
-                    .collect(),
-            );
-            let Some(state) = BlockStateResolver::resolve_simple(&entry) else {
-                unknown += 1;
-                continue;
-            };
-            let (x, y, z) = (pos.x, pos.y + base_y, pos.z);
-            by_chunk
-                .entry((x >> 4, z >> 4))
-                .or_default()
-                .push((x, y, z, state.id.as_u16()));
-            total += 1;
-        }
-
-        let chunk_count = by_chunk.len();
-        tracing::info!(
-            "schematic: pasting {total} blocks into {chunk_count} chunks ({unknown} unknown skipped)…"
-        );
-        let start = std::time::Instant::now();
-
-        for ((cx, cz), blocks) in by_chunk {
-            // Materialize the chunk (void gen is cheap) and keep it while writing.
-            level
-                .get_or_fetch_chunk(Vector2::new(cx, cz), |_| ())
-                .await;
-            for (x, y, z, state_id) in blocks {
-                level.set_block_state(
-                    &BlockPos(Vector3::new(x, y, z)),
-                    pumpkin_data::BlockStateId::new_or_air(state_id),
-                );
+            acc.extend_from_slice(&buf[..n]);
+            while acc.len() >= 4 {
+                let flen = u32::from_be_bytes([acc[0], acc[1], acc[2], acc[3]]) as usize;
+                if acc.len() < 4 + flen {
+                    break;
+                }
+                let frame: Vec<u8> = acc.drain(..4 + flen).skip(4).collect();
+                tracing::info!("schematic: live reload requested ({} KiB)", frame.len() / 1024);
+                paste(&server, &frame).await;
             }
         }
-
-        tracing::info!(
-            "schematic: done — {total} blocks in {:.1}s. Fly to 0 {base_y} 0.",
-            start.elapsed().as_secs_f64(),
-        );
     });
 }

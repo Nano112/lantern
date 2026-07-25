@@ -47,7 +47,7 @@ fn open_bridge() -> std::io::Result<u32> {
     open_socket(NET_SOCK_PATH)
 }
 
-fn fd_read_now(fd: u32, buf: &mut [u8]) -> usize {
+pub(crate) fn fd_read_now(fd: u32, buf: &mut [u8]) -> usize {
     let iov = wasi::Iovec {
         buf: buf.as_mut_ptr(),
         buf_len: buf.len(),

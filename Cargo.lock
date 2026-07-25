@@ -1901,6 +1901,7 @@ dependencies = [
  "pumpkin",
  "pumpkin-config",
  "pumpkin-data",
+ "pumpkin-protocol",
  "pumpkin-util",
  "pumpkin-world",
  "tokio",

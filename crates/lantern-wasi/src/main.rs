@@ -92,6 +92,7 @@ async fn run() {
     metrics::spawn(server.server.clone());
     persist::spawn_autosave(server.server.clone());
     schematic::spawn_import(server.server.clone());
+    schematic::spawn_live_reload(server.server.clone());
 
     // Boot self-test: prove the http.sock bridge reaches Mojang via the proxy.
     if online {

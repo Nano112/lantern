@@ -237,6 +237,44 @@ class MetricsFd extends Fd {
 
 const metricsFd = new MetricsFd();
 
+// Live schematic push: page → wasm, framed [u32 len][bytes].
+class SchemFd extends Fd {
+  rx = new Uint8Array(0);
+
+  fd_fdstat_get() {
+    const fdstat = new wasi.Fdstat(wasi.FILETYPE_CHARACTER_DEVICE, 0);
+    fdstat.fs_rights_base = BigInt(wasi.RIGHTS_FD_READ) | BigInt(wasi.RIGHTS_FD_WRITE);
+    return { ret: 0, fdstat };
+  }
+
+  fd_filestat_get() {
+    return { ret: 0, filestat: new wasi.Filestat(0n, wasi.FILETYPE_CHARACTER_DEVICE, 0n) };
+  }
+
+  fd_read(len) {
+    const n = Math.min(len, this.rx.length);
+    const data = this.rx.slice(0, n);
+    this.rx = this.rx.slice(n);
+    return { ret: 0, data };
+  }
+
+  fd_write(data) {
+    return { ret: 0, nwritten: data.byteLength };
+  }
+
+  push(bytes) {
+    const framed = new Uint8Array(4 + bytes.length);
+    new DataView(framed.buffer).setUint32(0, bytes.length);
+    framed.set(bytes, 4);
+    const merged = new Uint8Array(this.rx.length + framed.length);
+    merged.set(this.rx);
+    merged.set(framed, this.rx.length);
+    this.rx = merged;
+  }
+}
+
+const schemFd = new SchemFd();
+
 // state.bin: reads serve the OPFS snapshot loaded at boot; writes buffer the
 // new snapshot and flush it to OPFS on close.
 class PersistFd extends Fd {
@@ -392,7 +430,10 @@ let started = false;
 const pendingStdin = [];
 
 self.onmessage = (e) => {
-  if (e.data.type === "stdin") {
+  if (e.data.type === "schem") {
+    schemFd.push(new Uint8Array(e.data.bytes));
+    post({ type: "term", text: `[schem] pushed ${(e.data.bytes.byteLength / 1024).toFixed(1)} KiB to the running server\n` });
+  } else if (e.data.type === "stdin") {
     if (runner) stdin.push(e.data.line);
     else pendingStdin.push(e.data.line);
   } else if (e.data.type === "init" && !started) {
@@ -415,6 +456,7 @@ async function boot({ env, fresh, schem }) {
     ["state.bin", new PersistInode(persistFd)],
   ]);
   if (schem?.length) cwdEntries.set("import.schem", new File(schem));
+  cwdEntries.set("schem.sock", new NetSockInode(schemFd));
   const cwd = new PreopenDirectory(".", cwdEntries);
   const farm = new WASIFarm(stdin, new TerminalOut(), new TerminalOut(), [cwd], {
     allocator_size: 64 * 1024 * 1024, // world snapshots move through here

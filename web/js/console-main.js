@@ -44,16 +44,14 @@ if (params.has("bench")) env.push(`LANTERN_BENCH=${params.get("bench")}`);
 // Schematic-as-world: ?schem=<url> fetches the file (schemat.io URLs are
 // routed through the proxy to dodge CORS) and boots a void world around it.
 // ?gen=void|flat forces the generator without a schematic too.
-// NOTE: void/flat currently livelocks the chunk scheduler on wasm (upstream
-// bug, reproduced; noise is unaffected) — schematics default to a noise world
-// pasted high up until that's fixed. ?gen=void to experiment anyway.
-const gen = params.get("gen");
+// Schematics default to a void world (bedrock floor at -64, paste at -63) —
+// the flat-generator scheduler livelock is fixed in the fork.
+const gen = params.get("gen") ?? (params.has("schem") ? "void" : null);
 if (gen && gen !== "normal") env.push(`LANTERN_WORLDGEN=${gen}`);
-if (params.has("schem")) env.push(`LANTERN_SCHEM_Y=${params.get("y") ?? (gen === "void" ? "-63" : "100")}`);
+const schemY = params.get("y") ?? (gen === "normal" ? "100" : "-63");
+env.push(`LANTERN_SCHEM_Y=${schemY}`);
 
-async function fetchSchematic() {
-  const raw = params.get("schem");
-  if (!raw) return null;
+function translateSchemUrl(raw) {
   let url = raw;
   try {
     const u = new URL(raw, location.href);
@@ -68,6 +66,11 @@ async function fetchSchematic() {
       url = `${base}/api/schematio${path}${page ? "" : u.search}`;
     }
   } catch { /* relative path — leave as-is */ }
+  return url;
+}
+
+async function fetchSchematicBytes(raw) {
+  const url = translateSchemUrl(raw);
   writeText(`[schem] fetching ${raw}…\n`);
   const resp = await fetch(url);
   if (!resp.ok) {
@@ -83,6 +86,12 @@ async function fetchSchematic() {
   }
   writeText(`[schem] ${(buf.length / 1024).toFixed(1)} KiB downloaded\n`);
   return buf;
+}
+
+async function fetchSchematic() {
+  const raw = params.get("schem");
+  if (!raw) return null;
+  return fetchSchematicBytes(raw);
 }
 
 fetchSchematic()
@@ -207,4 +216,26 @@ function drawSpark(canvas, series, refLine) {
     });
     ctx.stroke();
   }
+}
+
+// --- live schematic swap ---
+const schemInput = document.getElementById("schem-url");
+const schemBtn = document.getElementById("schem-load");
+if (schemBtn) {
+  schemBtn.addEventListener("click", async () => {
+    const raw = schemInput.value.trim();
+    if (!raw) return;
+    schemBtn.disabled = true;
+    try {
+      const bytes = await fetchSchematicBytes(raw);
+      if (bytes) farmWorker.postMessage({ type: "schem", bytes: bytes.buffer }, [bytes.buffer]);
+    } catch (e) {
+      writeText(`[schem] ${e}\n`);
+    } finally {
+      schemBtn.disabled = false;
+    }
+  });
+  schemInput?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") schemBtn.click();
+  });
 }
