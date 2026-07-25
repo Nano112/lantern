@@ -1,0 +1,25 @@
+{
+    "TCP": {
+        "443": {
+            "HTTPS": true
+        },
+        "25565": {
+            "TCPForward": "host.docker.internal:25570"
+        }
+    },
+    "Web": {
+        "lantern.stalk-dinosaur.ts.net:443": {
+            "Handlers": {
+                "/": {
+                    "Proxy": "http://host.docker.internal:8932"
+                },
+                "/ws": {
+                    "Proxy": "http://host.docker.internal:9091"
+                },
+                "/api/": {
+                    "Proxy": "http://host.docker.internal:9091"
+                }
+            }
+        }
+    }
+}

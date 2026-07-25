@@ -1,0 +1,28 @@
+# lantern tailscale sidecar — same pattern as schemati's:
+# gives lantern its own tailnet hostname (lantern.stalk-dinosaur.ts.net) so
+# nothing fights NPM over the mini's :443.
+#   https://lantern.stalk-dinosaur.ts.net       → console (mini :8932)
+#   wss://lantern.stalk-dinosaur.ts.net/ws      → proxy websocket (mini :9091)
+#   lantern.stalk-dinosaur.ts.net:25565 (TCP)   → minecraft (mini :25570)
+services:
+    tailscale:
+        image: tailscale/tailscale:latest
+        hostname: lantern
+        environment:
+            - TS_AUTHKEY=${TS_AUTHKEY}
+            - TS_STATE_DIR=/var/lib/tailscale
+            - TS_SERVE_CONFIG=/config/serve.json
+            - TS_HOSTNAME=lantern
+        volumes:
+            - 'lantern-tailscale-state:/var/lib/tailscale'
+            - './serve.json:/config/serve.json:ro'
+        cap_add:
+            - NET_ADMIN
+            - SYS_MODULE
+        extra_hosts:
+            - 'host.docker.internal:host-gateway'
+        restart: unless-stopped
+
+volumes:
+    lantern-tailscale-state:
+        driver: local

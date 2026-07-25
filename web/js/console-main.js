@@ -62,7 +62,9 @@ function translateSchemUrl(raw) {
       const path = page ? `/api/v1/schematics/${page[1]}/download` : u.pathname;
       const base = location.hostname === "localhost"
         ? "http://localhost:9091"
-        : `https://${location.hostname}:9443`;
+        : (!location.port || location.port === "443")
+          ? `https://${location.hostname}`
+          : `https://${location.hostname}:9443`;
       url = `${base}/api/schematio${path}${page ? "" : u.search}`;
     }
   } catch { /* relative path — leave as-is */ }
@@ -107,8 +109,11 @@ farmWorker.onmessage = (e) => {
   if (m.type === "term") writeText(m.text);
   else if (m.type === "status") statusEl.textContent = m.status;
   else if (m.type === "room") {
-    const mcHost = location.hostname === "localhost" ? "localhost" : location.hostname;
-    connectEl.textContent = `Minecraft Java 26.2 → ${mcHost}:25570 (room "${m.room}")`;
+    const h = location.hostname;
+    const sidecar = h !== "localhost" && (!location.port || location.port === "443");
+    // The sidecar TCP-forwards the default Minecraft port; direct access uses :25570.
+    const mcAddr = sidecar ? h : `${h === "localhost" ? "localhost" : h}:25570`;
+    connectEl.textContent = `Minecraft Java 26.2 → ${mcAddr} (room "${m.room}")`;
   } else if (m.type === "metrics") {
     onMetrics(m.data);
   } else if (m.type === "error") {

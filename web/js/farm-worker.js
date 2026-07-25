@@ -356,9 +356,15 @@ class PersistInode extends Inode {
 }
 
 function connectProxy() {
-  const url = self.location.hostname === "localhost"
+  // localhost dev → direct port; lantern sidecar (default https port) →
+  // same-origin /ws; legacy mac-mini:<port> pages → ts.net :9443.
+  const h = self.location.hostname;
+  const port = self.location.port;
+  const url = h === "localhost"
     ? "ws://localhost:9091/ws"
-    : `wss://${self.location.hostname}:9443/ws`;
+    : (!port || port === "443")
+      ? `wss://${h}/ws`
+      : `wss://${h}:9443/ws`;
   const ws = new WebSocket(url);
   ws.binaryType = "arraybuffer";
   netFd.ws = ws;
