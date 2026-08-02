@@ -85,8 +85,14 @@ func (h *WSHandler) handleConnection(conn *websocket.Conn) {
 
 	// Try to register with the preferred name, then with suffixes
 	assigned := preferred
-	if !h.Router.TryRegister(assigned, sess) {
-		registered := false
+	registered := h.Router.TryRegister(assigned, sess)
+	if !registered && reg.Takeover {
+		if old := h.Router.Replace(assigned, sess); old != nil {
+			log.Printf("ws: room %q taken over (newest-wins), evicted previous session", assigned)
+		}
+		registered = true
+	}
+	if !registered {
 		for i := 0; i < 10; i++ {
 			assigned = preferred + "-" + randomSuffix()
 			if h.Router.TryRegister(assigned, sess) {
@@ -125,8 +131,11 @@ func (h *WSHandler) handleConnection(conn *websocket.Conn) {
 		metrics.Get().SetRoomFavicon(assigned, reg.Favicon)
 	}
 	defer func() {
-		h.Router.Remove(assigned)
-		metrics.Get().RoomRemoved(assigned)
+		// After a takeover the room name belongs to the new session — the
+		// evicted session must not tear down its metrics entry.
+		if h.Router.Remove(assigned, sess) {
+			metrics.Get().RoomRemoved(assigned)
+		}
 		h.ActiveRooms.Add(-1)
 	}()
 

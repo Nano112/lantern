@@ -107,10 +107,14 @@ type Server struct {
 
 // registration is the JSON sent by the browser on the control stream.
 type registration struct {
-	Room    string `json:"room"`
-	Public  bool   `json:"public,omitempty"`
-	MOTD    string `json:"motd,omitempty"`
-	Favicon string `json:"favicon,omitempty"`
+	Room     string `json:"room"`
+	Public   bool   `json:"public,omitempty"`
+	MOTD     string `json:"motd,omitempty"`
+	Favicon  string `json:"favicon,omitempty"`
+	// Takeover: evict whoever holds the requested room (newest-wins). Set by
+	// the page only on its first registration after load, so reconnects and
+	// periodic retries never steal the room back.
+	Takeover bool   `json:"takeover,omitempty"`
 }
 
 // roomUpdate is a JSON message sent on the control stream to update room settings.
@@ -252,8 +256,11 @@ func (s *Server) handleSession(ctx context.Context, session *webtransport.Sessio
 		metrics.Get().SetRoomFavicon(assigned, reg.Favicon)
 	}
 	defer func() {
-		s.Router.Remove(assigned)
-		metrics.Get().RoomRemoved(assigned)
+		if s.Router.Remove(assigned, sess) {
+			metrics.Get().RoomRemoved(assigned)
+		} else {
+			log.Printf("wt: room %q was taken over, skipping metrics cleanup", assigned)
+		}
 		s.ActiveRooms.Add(-1)
 	}()
 

@@ -52,11 +52,30 @@ func (r *Router) Lookup(subdomain string) Session {
 	return r.sessions[subdomain]
 }
 
-// Remove deletes a session entry.
-func (r *Router) Remove(subdomain string) {
+// Remove deletes a session entry, but only if it still belongs to the given
+// session — after a takeover the name belongs to someone else and the evicted
+// session's cleanup must not clobber it. Returns whether an entry was removed.
+func (r *Router) Remove(subdomain string, session Session) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.sessions, subdomain)
+	if r.sessions[subdomain] == session {
+		delete(r.sessions, subdomain)
+		return true
+	}
+	return false
+}
+
+// Replace registers the session under subdomain, evicting any current holder
+// (newest-wins takeover). Returns the evicted session, if any.
+func (r *Router) Replace(subdomain string, session Session) Session {
+	r.mu.Lock()
+	old := r.sessions[subdomain]
+	r.sessions[subdomain] = session
+	r.mu.Unlock()
+	if old != nil {
+		old.Close()
+	}
+	return old
 }
 
 // CloseSession closes a specific room's session. The session's cleanup defer

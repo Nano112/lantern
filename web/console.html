@@ -33,7 +33,15 @@
 </style>
 </head>
 <body>
-<header><h1>🎃 lantern console</h1><div id="status">booting…</div><div id="connect"></div></header>
+<header>
+  <h1>🎃 lantern console</h1><div id="status">booting…</div>
+  <div id="connect" style="margin-left:auto; display:flex; gap:6px; align-items:center;">
+    <span id="mc-label" style="color:#9a8f7a; font-size:12px;">Minecraft Java 26.2</span>
+    <input id="mc-addr" readonly value="…" title="Minecraft server address" style="width:240px; background:#241f18; color:#7fb069; border:1px solid #3a332a; border-radius:4px; padding:5px 8px; font:inherit; font-size:13px; text-align:center; cursor:pointer;">
+    <button id="mc-copy" style="background:#7fb069; color:#16130f; border:0; border-radius:4px; padding:5px 10px; font:inherit; font-size:12px; cursor:pointer;">copy</button>
+    <span id="mc-room" style="color:#9a8f7a; font-size:11px;"></span>
+  </div>
+</header>
 <main>
   <div id="log"></div>
   <aside id="metrics">

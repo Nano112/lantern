@@ -76,7 +76,15 @@ cd ../proxy && go build ./cmd/proxy
 ```
 
 Open `http://localhost:8932/console.html`, then point a Minecraft Java 26.2
-client at `<host>:25570`.
+client at the address shown in the console's copy bar (`<host>:25570`
+direct, bare hostname via the tailscale sidecar).
+
+Rooms are newest-wins: the bare address always routes to room `"default"`,
+and a freshly loaded page evicts whoever held it (stale tabs demote
+themselves to suffixed rooms and stop competing). Suffixed rooms are
+reachable as `<room>.<domain>` wherever such names resolve — pass the parent
+domain via the proxy's `-domain` flag. (`*.ts.net` names can't have
+subdomains, so on the tailnet only the newest server is reachable.)
 
 URL params: `?offline=1` (cracked/bot access), `?fresh=1` (wipe saved world),
 `?schem=<url>` (+ `&gen=void&y=-63`), `?bench=N` (worldgen benchmark),

@@ -129,6 +129,25 @@ function apiBase() {
     : `https://${self.location.hostname}:9443`;
 }
 
+
+// Transient-failure tolerant fetch for the HTTP bridge: a proxy/sidecar
+// restart or upstream flake must not fail a Mojang auth call outright.
+async function fetchWithRetry(url, opts) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const resp = await fetch(url, opts);
+      if ((resp.status === 502 || resp.status === 503 || resp.status === 504) && attempt < 2) {
+        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+        continue;
+      }
+      return resp;
+    } catch (e) {
+      if (attempt >= 2) throw e;
+      await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+    }
+  }
+}
+
 class HttpBridgeFd extends Fd {
   rx = new Uint8Array(0);
   txbuf = new Uint8Array(0);
@@ -176,7 +195,7 @@ class HttpBridgeFd extends Fd {
       if (prefix) {
         const path = u.pathname.replace(/\/{2,}/g, "/");
         const target = `${apiBase()}${prefix}${path}${u.search}`;
-        const resp = await fetch(target, { method });
+        const resp = await fetchWithRetry(target, { method });
         status = resp.status;
         body = new Uint8Array(await resp.arrayBuffer());
       } else {
@@ -356,6 +375,8 @@ class PersistInode extends Inode {
   }
 }
 
+let claimedDefaultOnce = false;
+
 function connectProxy() {
   // localhost dev → direct port; lantern sidecar (default https port) →
   // same-origin /ws; legacy mac-mini:<port> pages → ts.net :9443.
@@ -370,7 +391,13 @@ function connectProxy() {
   ws.binaryType = "arraybuffer";
   netFd.ws = ws;
   ws.onopen = () => {
-    const reg = new TextEncoder().encode(JSON.stringify({ room: "default", motd: "lantern — Pumpkin in your browser" }));
+    // Newest-wins: the first registration of a page load evicts whoever holds
+    // "default" (stale tabs). Reconnects/retries never steal it back.
+    const reg = new TextEncoder().encode(JSON.stringify({
+      room: "default",
+      motd: "lantern — Pumpkin in your browser",
+      takeover: !claimedDefaultOnce,
+    }));
     ws.send(wsFrame(0, 0, reg)); // registration on control stream 0
     post({ type: "status", status: "server running — proxy connected" });
   };
@@ -380,6 +407,7 @@ function connectProxy() {
     if (sid === 0) {
       try {
         const resp = JSON.parse(new TextDecoder().decode(f.slice(5)));
+        if (resp.room) claimedDefaultOnce = true;
         if (resp.room) post({ type: "room", room: resp.room });
         writeText(`[proxy] room "${resp.room ?? "?"}" registered\n`);
         // Suffixed room = someone (likely a stale session) holds "default",

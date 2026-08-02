@@ -120,9 +120,18 @@ farmWorker.onmessage = (e) => {
   else if (m.type === "room") {
     const h = location.hostname;
     const sidecar = h !== "localhost" && (!location.port || location.port === "443");
-    // The sidecar TCP-forwards the default Minecraft port; direct access uses :25570.
-    const mcAddr = sidecar ? h : `${h === "localhost" ? "localhost" : h}:25570`;
-    connectEl.textContent = `Minecraft Java 26.2 → ${mcAddr} (room "${m.room}")`;
+    // The sidecar TCP-forwards the default Minecraft port; direct access uses
+    // :25570. The bare address routes to room "default" — which this page
+    // owns after boot (newest-wins takeover); suffixed rooms only work where
+    // wildcard DNS resolves (not on *.ts.net), so flag them.
+    const bare = sidecar ? h : `${h === "localhost" ? "localhost" : h}:25570`;
+    const addrEl = document.getElementById("mc-addr");
+    const roomEl = document.getElementById("mc-room");
+    addrEl.value = bare;
+    roomEl.textContent = m.room === "default"
+      ? ""
+      : `⚠ room "${m.room}" — another server owns this address`;
+    roomEl.style.color = m.room === "default" ? "#9a8f7a" : "#e0a458";
   } else if (m.type === "metrics") {
     onMetrics(m.data);
   } else if (m.type === "error") {
@@ -318,3 +327,21 @@ document.addEventListener("drop", async (e) => {
     writeText(`[drop] ${err.message ?? err}\n`);
   }
 });
+
+// --- copy-paste MC address ---
+const mcAddrEl = document.getElementById("mc-addr");
+const mcCopyBtn = document.getElementById("mc-copy");
+async function copyMcAddr() {
+  const v = mcAddrEl.value;
+  if (!v || v === "…") return;
+  try {
+    await navigator.clipboard.writeText(v);
+  } catch {
+    mcAddrEl.select();
+    document.execCommand("copy");
+  }
+  mcCopyBtn.textContent = "copied!";
+  setTimeout(() => { mcCopyBtn.textContent = "copy"; }, 1200);
+}
+mcCopyBtn?.addEventListener("click", copyMcAddr);
+mcAddrEl?.addEventListener("click", () => { mcAddrEl.select(); copyMcAddr(); });
