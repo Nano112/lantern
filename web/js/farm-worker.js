@@ -380,6 +380,9 @@ class PersistInode extends Inode {
 }
 
 let claimedDefaultOnce = false;
+// A crashed/exited server must not keep (re)claiming a room: a dead session
+// squatting "default" is exactly the stale-tab problem takeover exists for.
+let serverDead = false;
 
 function connectProxy() {
   // localhost dev → direct port; lantern sidecar (default https port) →
@@ -427,6 +430,10 @@ function connectProxy() {
     netFd.pushFrame(f);
   };
   ws.onclose = () => {
+    if (serverDead) {
+      post({ type: "status", status: "server down — not re-registering the room" });
+      return;
+    }
     post({ type: "status", status: "proxy disconnected (retrying in 5s)" });
     setTimeout(connectProxy, 5000);
   };
@@ -680,10 +687,14 @@ async function boot({ env, fresh, schem, world }) {
     if (ev.data.status) {
       post({ type: "status", status: ev.data.status });
       // A finished server must not squat on the room.
-      if (/exited/.test(ev.data.status)) netFd.ws?.close();
+      if (/exited/.test(ev.data.status)) {
+        serverDead = true;
+        netFd.ws?.close();
+      }
     }
     if (ev.data.error) {
       post({ type: "error", error: ev.data.error });
+      serverDead = true;
       netFd.ws?.close();
     }
   };
