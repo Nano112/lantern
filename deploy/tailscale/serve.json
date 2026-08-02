@@ -14,10 +14,10 @@
                     "Proxy": "http://host.docker.internal:8932"
                 },
                 "/ws": {
-                    "Proxy": "http://host.docker.internal:9091"
+                    "Proxy": "http://host.docker.internal:9091/ws"
                 },
                 "/api/": {
-                    "Proxy": "http://host.docker.internal:9091"
+                    "Proxy": "http://host.docker.internal:9091/api/"
                 }
             }
         }
