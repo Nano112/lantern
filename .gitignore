@@ -5,3 +5,5 @@ proxy/certs/
 run/
 web/test.schem
 web/clock.schem
+web/clock.litematic
+web/clock-world.zip

@@ -61,9 +61,27 @@ fn save_prev_positions(positions: &[(i32, i32, i32)]) {
     }
 }
 
+/// Parse the schematic formats we accept: sponge .schem, .litematic, and
+/// legacy MCEdit .schematic. Detection by content, not filename.
+/// (Deliberately NOT nucleation's FormatManager: registering every importer
+/// links in the world/zip readers, and that binary hangs at startup on the
+/// wasm target — see README gotchas.)
+pub(crate) fn parse_any(bytes: &[u8]) -> Result<nucleation::UniversalSchematic, String> {
+    use nucleation::formats::{classic_schematic, litematic};
+    if litematic::is_litematic(bytes) {
+        tracing::info!("schematic: detected format \"litematic\"");
+        return litematic::from_litematic(bytes).map_err(|e| format!("{e}"));
+    }
+    if classic_schematic::is_classic_schematic(bytes) {
+        tracing::info!("schematic: detected format \"classic schematic\"");
+        return classic_schematic::from_classic_schematic(bytes).map_err(|e| format!("{e}"));
+    }
+    nucleation::UniversalSchematic::from_schematic(bytes).map_err(|e| format!("{e}"))
+}
+
 async fn paste(server: &Arc<Server>, bytes: &[u8]) {
     tracing::info!("schematic: parsing {} KiB…", bytes.len() / 1024);
-    let schem = match nucleation::UniversalSchematic::from_schematic(bytes) {
+    let schem = match parse_any(bytes) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("schematic: parse failed: {e}");

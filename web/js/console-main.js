@@ -100,9 +100,18 @@ fetchSchematic()
   .catch((e) => { writeText(`[schem] ${e}\n`); return null; })
   .then((schem) => {
     farmWorker.postMessage(
-      { type: "init", env, fresh: params.has("fresh"), schem },
+      { type: "init", env, fresh: params.has("fresh"), schem, world: params.has("world") },
       schem ? [schem.buffer] : [],
     );
+    // fresh/world are one-shot: once consumed, the imported world lives in
+    // state.bin — a manual reload must not wipe it or re-import.
+    if (params.has("fresh") || params.has("world")) {
+      const clean = new URLSearchParams(location.search);
+      clean.delete("fresh");
+      clean.delete("world");
+      const qs = clean.toString();
+      history.replaceState(null, "", location.pathname + (qs ? `?${qs}` : ""));
+    }
   });
 farmWorker.onmessage = (e) => {
   const m = e.data;
@@ -258,3 +267,54 @@ simOff?.addEventListener("click", () => {
 });
 // Debug/scripting hook: lanternSim("use 0 -62 0")
 window.lanternSim = (cmd) => farmWorker.postMessage({ type: "sim", cmd: String(cmd) });
+
+// --- drag & drop: schematics hot-swap the running server; world zips are
+// staged in OPFS and the page reboots with the world mounted ---
+const dropOverlay = document.createElement("div");
+dropOverlay.textContent = "drop to load — .schem / .litematic / .schematic hot-swaps, world .zip reboots into that world";
+dropOverlay.style.cssText = "position:fixed; inset:0; z-index:99; display:none; align-items:center; justify-content:center; text-align:center; padding:40px; background:rgba(22,19,15,.88); border:3px dashed #f0a030; color:#f0a030; font-size:16px; pointer-events:none;";
+document.body.appendChild(dropOverlay);
+
+let dragDepth = 0;
+document.addEventListener("dragenter", (e) => {
+  e.preventDefault();
+  if (++dragDepth === 1) dropOverlay.style.display = "flex";
+});
+document.addEventListener("dragleave", () => {
+  if (--dragDepth <= 0) { dragDepth = 0; dropOverlay.style.display = "none"; }
+});
+document.addEventListener("dragover", (e) => e.preventDefault());
+
+async function importWorldZip(file) {
+  writeText(`[world] staging ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MiB) — the server will reboot into it\n`);
+  const root = await navigator.storage.getDirectory();
+  const handle = await root.getFileHandle("import-world.zip", { create: true });
+  const w = await handle.createWritable();
+  await w.write(await file.arrayBuffer());
+  await w.close();
+  const next = new URLSearchParams();
+  if (params.has("offline")) next.set("offline", params.get("offline") || "1");
+  if (params.has("gen")) next.set("gen", params.get("gen"));
+  next.set("fresh", "1");
+  next.set("world", "1");
+  location.href = `${location.pathname}?${next}`;
+}
+
+document.addEventListener("drop", async (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  dropOverlay.style.display = "none";
+  const file = e.dataTransfer?.files?.[0];
+  if (!file) return;
+  try {
+    if (/\.zip$/i.test(file.name)) {
+      await importWorldZip(file);
+    } else {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      writeText(`[schem] dropped ${file.name} (${(bytes.length / 1024).toFixed(1)} KiB) — hot-swapping\n`);
+      farmWorker.postMessage({ type: "schem", bytes: bytes.buffer }, [bytes.buffer]);
+    }
+  } catch (err) {
+    writeText(`[drop] ${err.message ?? err}\n`);
+  }
+});

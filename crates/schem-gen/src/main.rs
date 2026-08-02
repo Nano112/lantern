@@ -39,4 +39,13 @@ fn main() {
     let bytes = clock.to_schematic().expect("serialize clock");
     std::fs::write("web/clock.schem", &bytes).expect("write clock");
     println!("wrote web/clock.schem ({} bytes)", bytes.len());
+
+    // Same scene as a litematic and as a vanilla world zip — drag-and-drop
+    // test fixtures for the two other import paths.
+    let lit = nucleation::formats::litematic::to_litematic(&clock).expect("litematic");
+    std::fs::write("web/clock.litematic", &lit).expect("write litematic");
+    println!("wrote web/clock.litematic ({} bytes)", lit.len());
+    let zip = nucleation::formats::world::to_world_zip(&clock, None).expect("world zip");
+    std::fs::write("web/clock-world.zip", &zip).expect("write world zip");
+    println!("wrote web/clock-world.zip ({} bytes)", zip.len());
 }

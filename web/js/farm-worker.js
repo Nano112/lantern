@@ -1,7 +1,7 @@
 // lantern farm worker: hosts the WASI farm (fs + stdio + net bridge) and the
 // proxy WebSocket OFF the main thread, so page rendering and background-tab
 // throttling never stall server I/O. The page talks to us via postMessage.
-import { Fd, File, Inode, PreopenDirectory, wasi } from "@bjorn3/browser_wasi_shim";
+import { Directory, Fd, File, Inode, PreopenDirectory, wasi } from "@bjorn3/browser_wasi_shim";
 import { WASIFarm } from "@oligami/browser_wasi_shim-threads";
 
 const post = (msg) => self.postMessage(msg);
@@ -432,6 +432,98 @@ async function loadFromOpfs(fresh) {
   }
 }
 
+// ── World-zip import ────────────────────────────────────────────────────────
+// A dropped world zip is stashed in OPFS by the page, which reloads with
+// ?world=1; we read it here at boot, inflate it (browser-native
+// DecompressionStream, no zip library), and mount the world directory into
+// the WASI fs so Pumpkin's anvil reader loads its chunks lazily.
+
+const WORLD_ZIP_FILE = "import-world.zip";
+
+async function takeWorldZipFromOpfs() {
+  try {
+    const root = await navigator.storage.getDirectory();
+    const handle = await root.getFileHandle(WORLD_ZIP_FILE);
+    const bytes = new Uint8Array(await (await handle.getFile()).arrayBuffer());
+    await root.removeEntry(WORLD_ZIP_FILE).catch(() => {});
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+async function unzipAll(u8) {
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  let eocd = -1;
+  for (let i = u8.length - 22; i >= Math.max(0, u8.length - 22 - 65557); i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error("not a zip file (no end-of-central-directory record)");
+  const count = dv.getUint16(eocd + 10, true);
+  let off = dv.getUint32(eocd + 16, true);
+  if (count === 0xffff || off === 0xffffffff) throw new Error("zip64 archives not supported");
+  const td = new TextDecoder();
+  const entries = [];
+  for (let i = 0; i < count; i++) {
+    if (dv.getUint32(off, true) !== 0x02014b50) throw new Error("corrupt zip central directory");
+    const method = dv.getUint16(off + 10, true);
+    const csize = dv.getUint32(off + 20, true);
+    const nameLen = dv.getUint16(off + 28, true);
+    const extraLen = dv.getUint16(off + 30, true);
+    const commentLen = dv.getUint16(off + 32, true);
+    const lho = dv.getUint32(off + 42, true);
+    const name = td.decode(u8.subarray(off + 46, off + 46 + nameLen));
+    if (csize === 0xffffffff || lho === 0xffffffff) throw new Error("zip64 archives not supported");
+    if (!name.endsWith("/")) {
+      const lnl = dv.getUint16(lho + 26, true), lel = dv.getUint16(lho + 28, true);
+      const dataStart = lho + 30 + lnl + lel;
+      entries.push({ name, method, data: u8.subarray(dataStart, dataStart + csize) });
+    }
+    off += 46 + nameLen + extraLen + commentLen;
+  }
+  for (const e of entries) {
+    if (e.method === 8) {
+      e.data = new Uint8Array(await new Response(
+        new Blob([e.data]).stream().pipeThrough(new DecompressionStream("deflate-raw")),
+      ).arrayBuffer());
+    } else if (e.method !== 0) {
+      throw new Error(`unsupported zip compression method ${e.method} in ${e.name}`);
+    }
+  }
+  return entries;
+}
+
+// Everything the server won't use and would only bloat memory/state.bin.
+const WORLD_SKIP = /(^|\/)(__MACOSX\/|\.DS_Store$|session\.lock$|DIM1\/|DIM-1\/)/;
+
+function buildWorldDir(entries) {
+  const cands = entries.filter((e) => e.name === "level.dat" || e.name.endsWith("/level.dat"));
+  if (!cands.length) throw new Error("no level.dat in the zip — is this a world save?");
+  const prefix = cands.reduce((a, b) => (a.name.length <= b.name.length ? a : b))
+    .name.slice(0, -"level.dat".length);
+  const root = new Directory(new Map());
+  let files = 0, bytes = 0;
+  for (const e of entries) {
+    if (!e.name.startsWith(prefix)) continue;
+    const rel = e.name.slice(prefix.length);
+    if (!rel || WORLD_SKIP.test(rel)) continue;
+    const parts = rel.split("/").filter(Boolean);
+    let dir = root;
+    for (const part of parts.slice(0, -1)) {
+      let child = dir.contents.get(part);
+      if (!(child instanceof Directory)) {
+        child = new Directory(new Map());
+        child.parent = dir;
+        dir.contents.set(part, child);
+      }
+      dir = child;
+    }
+    dir.contents.set(parts.at(-1), new File(e.data));
+    files += 1; bytes += e.data.length;
+  }
+  return { root, files, bytes };
+}
+
 let runner = null;
 let started = false;
 const pendingStdin = [];
@@ -451,7 +543,7 @@ self.onmessage = (e) => {
   }
 };
 
-async function boot({ env, fresh, schem }) {
+async function boot({ env, fresh, schem, world }) {
   const snapshot = await loadFromOpfs(fresh);
   if (snapshot.length) {
     post({ type: "term", text: `[persist] loaded ${(snapshot.length / 1024).toFixed(0)} KiB world from OPFS\n` });
@@ -465,6 +557,18 @@ async function boot({ env, fresh, schem }) {
     ["state.bin", new PersistInode(persistFd)],
   ]);
   if (schem?.length) cwdEntries.set("import.schem", new File(schem));
+  if (world) {
+    try {
+      const zip = await takeWorldZipFromOpfs();
+      if (!zip) throw new Error("no staged world zip found in OPFS");
+      post({ type: "term", text: `[world] inflating ${(zip.length / 1024 / 1024).toFixed(1)} MiB zip…\n` });
+      const { root, files, bytes } = buildWorldDir(await unzipAll(zip));
+      cwdEntries.set("world", root);
+      post({ type: "term", text: `[world] mounted ${files} files (${(bytes / 1024 / 1024).toFixed(1)} MiB) at ./world — Pumpkin will load its chunks\n` });
+    } catch (e) {
+      post({ type: "term", text: `[world] import failed: ${e.message ?? e}\n` });
+    }
+  }
   cwdEntries.set("schem.sock", new NetSockInode(schemFd));
   cwdEntries.set("sim.sock", new NetSockInode(simFd));
   const cwd = new PreopenDirectory(".", cwdEntries);

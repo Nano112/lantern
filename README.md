@@ -107,6 +107,28 @@ Pumpkin world and broadcasts `CBlockUpdate`s to connected clients.
   `crates/lantern-wasi/src/sim.rs` (settle mode "in world"); worth upstreaming
   as a public embed API.
 
+## Drag & drop
+
+Drop files anywhere on the console page:
+
+- **`.schem` / `.litematic` / legacy `.schematic`** — hot-swaps the running
+  server's pasted build (format detected by content, via nucleation).
+- **world `.zip`** (a Java world save containing `level.dat`) — the zip is
+  staged in OPFS and the page reboots into it: the archive is inflated in the
+  farm worker (browser-native `DecompressionStream`, no zip library) and
+  mounted at `./world`, so Pumpkin reads `level.dat` and loads chunks lazily
+  from the region files. Ungenerated areas fall to the active generator.
+  `DIM1`/`DIM-1`, `session.lock` and macOS zip litter are skipped; the world
+  is captured by the normal OPFS persistence on the next autosave, so the
+  import is one-shot (`?fresh=1&world=1` strip themselves after boot).
+
+> Gotcha: don't parse schematics through nucleation's `FormatManager` in the
+> wasm binary — registering every importer links in the world/zip readers and
+> that binary wedges at startup on wasm32-wasip1-threads (silent, no output;
+> root cause not yet found). `schematic.rs::parse_any` sniffs
+> litematic/classic by content instead and world zips never reach Rust — the
+> page unzips them.
+
 ## Performance notes (all measured, wasm, M-series)
 
 - ~11–13 chunks/s through the real pipeline. **2 gen threads is the optimum;

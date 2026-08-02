@@ -61,8 +61,7 @@ fn parse_descriptor(descriptor: &str) -> PaletteEntry {
 /// schematic, settle mode "in world" (blocks stand as found, nothing re-runs
 /// onPlace).
 fn build_simulation(bytes: &[u8]) -> Result<RunningSim, String> {
-    let schematic = nucleation::UniversalSchematic::from_schematic(bytes)
-        .map_err(|e| format!("parse: {e}"))?;
+    let schematic = crate::schematic::parse_any(bytes).map_err(|e| format!("parse: {e}"))?;
     let bb = schematic.get_bounding_box();
     let min = (bb.min.0, bb.min.1, bb.min.2);
 
