@@ -124,9 +124,13 @@ const HTTP_HOST_MAP = {
 };
 
 function apiBase() {
-  return self.location.hostname === "localhost"
-    ? "http://localhost:9091"
-    : `https://${self.location.hostname}:9443`;
+  // Mirror connectProxy: localhost dev → direct proxy port; sidecar pages
+  // (default https port) → same-origin /api/ (tailscale serve maps it);
+  // legacy <host>:<port> pages → the host tailscale's :9443.
+  const h = self.location.hostname;
+  const port = self.location.port;
+  if (h === "localhost") return "http://localhost:9091";
+  return (!port || port === "443") ? `https://${h}` : `https://${h}:9443`;
 }
 
 
