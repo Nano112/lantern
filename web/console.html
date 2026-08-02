@@ -85,5 +85,22 @@
 </main>
 <div id="inputbar"><span id="prompt">$</span><input id="input" autocomplete="off" spellcheck="false" autofocus placeholder="server command (help, seed, say hi, time query daytime)"></div>
 <script type="module" src="./dist/console-main.js"></script>
+
+<div id="drop-modal" style="position:fixed; inset:0; z-index:100; display:none; align-items:center; justify-content:center; background:rgba(10,8,6,.75);">
+  <div style="background:#1d1912; border:1px solid #3a332a; border-radius:8px; padding:20px; width:340px; display:flex; flex-direction:column; gap:12px;">
+    <div id="drop-modal-name" style="color:#f0a030; font-size:14px; word-break:break-all;"></div>
+    <div style="display:flex; gap:6px; align-items:center;">
+      <span style="color:#9a8f7a; font-size:12px;">paste at</span>
+      <input id="drop-x" value="0"   style="width:60px; background:#241f18; color:#e8dcc8; border:1px solid #3a332a; border-radius:4px; padding:4px 6px; font:inherit; font-size:12px; text-align:center;">
+      <input id="drop-y" value="-63" style="width:60px; background:#241f18; color:#e8dcc8; border:1px solid #3a332a; border-radius:4px; padding:4px 6px; font:inherit; font-size:12px; text-align:center;">
+      <input id="drop-z" value="0"   style="width:60px; background:#241f18; color:#e8dcc8; border:1px solid #3a332a; border-radius:4px; padding:4px 6px; font:inherit; font-size:12px; text-align:center;">
+    </div>
+    <div style="display:flex; gap:8px;">
+      <button id="drop-paste" style="flex:1; background:#7fb069; color:#16130f; border:0; border-radius:4px; padding:8px; font:inherit; font-size:13px; cursor:pointer;">paste into world</button>
+      <button id="drop-world" style="flex:1; background:#f0a030; color:#16130f; border:0; border-radius:4px; padding:8px; font:inherit; font-size:13px; cursor:pointer;">fresh void world</button>
+    </div>
+    <button id="drop-cancel" style="background:none; color:#9a8f7a; border:0; font:inherit; font-size:12px; cursor:pointer;">cancel</button>
+  </div>
+</div>
 </body>
 </html>

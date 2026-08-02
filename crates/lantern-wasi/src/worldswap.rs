@@ -53,6 +53,51 @@ async fn swap(server: &Arc<Server>) {
     );
 }
 
+/// Old-version world zip: run it through nucleation's DataConverter
+/// (PaperMC port — block states, block entities, items, entities), re-emit
+/// current-version world files into ./world, then hot-swap. Bounded to a
+/// sane volume: the conversion holds every block in memory.
+async fn convert_and_swap(server: &Arc<Server>, zip: &[u8]) {
+    tracing::info!(
+        "worldswap: converting {} KiB old-version world with nucleation's DataConverter…",
+        zip.len() / 1024
+    );
+    const R: i32 = 512; // ±32 chunks around origin — memory-bounded
+    let mut schem =
+        match nucleation::formats::world::from_world_zip_bounded(zip, -R, -64, -R, R, 320, R) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("worldswap: convert failed reading old world: {e}");
+                return;
+            }
+        };
+    let from = schem.metadata.source_data_version.unwrap_or(0);
+    schem.convert_to_canonical();
+    tracing::info!(
+        "worldswap: DataVersion {from} → {} — writing world files…",
+        nucleation::dataconverter::CANONICAL_DATA_VERSION
+    );
+    let files = match nucleation::formats::world::to_world(&schem, None) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("worldswap: convert failed writing world: {e}");
+            return;
+        }
+    };
+    let _ = std::fs::remove_dir_all("world");
+    for (path, data) in &files {
+        let full = format!("world/{path}");
+        if let Some(parent) = std::path::Path::new(&full).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(&full, data) {
+            tracing::warn!("worldswap: write {full}: {e}");
+        }
+    }
+    tracing::info!("worldswap: wrote {} converted files", files.len());
+    swap(server).await;
+}
+
 pub fn spawn_control(server: Arc<Server>) {
     let Ok(fd) = crate::net_bridge::open_socket(SWAP_SOCK) else {
         return;
@@ -73,11 +118,15 @@ pub fn spawn_control(server: Arc<Server>) {
                     break;
                 }
                 let frame: Vec<u8> = acc.drain(..4 + flen).skip(4).collect();
-                let cmd = String::from_utf8_lossy(&frame).trim().to_string();
-                if cmd == "swap" {
-                    swap(&server).await;
+                if frame.starts_with(b"convert:") {
+                    convert_and_swap(&server, &frame["convert:".len()..]).await;
                 } else {
-                    tracing::warn!("worldswap: unknown command {cmd:?}");
+                    let cmd = String::from_utf8_lossy(&frame).trim().to_string();
+                    if cmd == "swap" {
+                        swap(&server).await;
+                    } else {
+                        tracing::warn!("worldswap: unknown command {cmd:?}");
+                    }
                 }
             }
         }

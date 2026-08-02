@@ -137,12 +137,29 @@ Drop files anywhere on the console page:
     DataFixerUpper). Older worlds get a clear refusal — open them once in a
     current Minecraft to upgrade, then re-zip.
 
-> Gotcha: don't parse schematics through nucleation's `FormatManager` in the
-> wasm binary — registering every importer links in the world/zip readers and
-> that binary wedges at startup on wasm32-wasip1-threads (silent, no output;
-> root cause not yet found). `schematic.rs::parse_any` sniffs
-> litematic/classic by content instead and world zips never reach Rust — the
-> page unzips them.
+> Gotcha: don't parse schematics through nucleation's `FormatManager`
+> (`get_manager()`) in the wasm binary — that build wedged at startup on
+> wasm32-wasip1-threads (silent, no output). Direct calls into
+> `nucleation::formats::{litematic, classic_schematic, world}` link and run
+> fine (the DataConverter world-upgrade path uses `formats::world` in-browser),
+> so the problem is specific to the manager's registry, not the format code.
+> `schematic.rs::parse_any` sniffs formats by content instead.
+
+### Old worlds: automatic DataConverter upgrade
+
+Dropped world zips older than Pumpkin's supported range are upgraded
+in-browser by nucleation's DataConverter (a Rust port of PaperMC's
+DataConverter): the zip goes over `world.sock` as a `convert:` command, is
+read bounded to ±512 blocks around origin, forward-converted to the canonical
+DataVersion, re-emitted as current world files and hot-swapped. Verified
+round-trip: a DV-4082 (1.21.4) export upgrades to 4790 and loads.
+
+### Schematic drop modal
+
+Dropping a schematic opens a modal: **paste into world** at chosen X/Y/Z
+(placement travels as an `LSH1` JSON header on the `schem.sock` frame), or
+**fresh void world** (bytes staged in OPFS, page reboots, one-shot
+`?schemstage=1`).
 
 ## Performance notes (all measured, wasm, M-series)
 

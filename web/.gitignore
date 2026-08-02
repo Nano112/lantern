@@ -2,3 +2,4 @@ node_modules/
 dist/
 lantern.wasm
 package-lock.json
+web/clock-world-old.zip

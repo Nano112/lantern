@@ -607,8 +607,22 @@ const pendingStdin = [];
 // Live world swap: replace ./world's contents in place, then tell the server
 // to purge its chunk cache and re-send chunks — no reboot, no kick.
 async function liveWorldSwap(zipBytes) {
-  const entries = await unzipAll(new Uint8Array(zipBytes));
-  await checkWorldVersion(entries);
+  const u8 = new Uint8Array(zipBytes);
+  const entries = await unzipAll(u8);
+  let dv = null;
+  try {
+    dv = await checkWorldVersion(entries);
+  } catch (e) {
+    if (!/DataVersion/.test(String(e))) throw e;
+    // Old world: nucleation's DataConverter (in the server binary) upgrades
+    // it — send the raw zip over world.sock as a convert command.
+    post({ type: "term", text: `[world] old-version world — upgrading with nucleation's DataConverter…\n` });
+    const cmd = new TextEncoder().encode("convert:");
+    const framed = new Uint8Array(cmd.length + u8.length);
+    framed.set(cmd); framed.set(u8, cmd.length);
+    worldSwapFd.push(framed);
+    return;
+  }
   const { root, files, bytes } = buildWorldDir(entries);
   let dir = cwdRootDir.contents.get("world");
   if (dir instanceof Directory) {
@@ -632,7 +646,16 @@ self.onmessage = (e) => {
   } else if (e.data.type === "sim") {
     simFd.push(new TextEncoder().encode(e.data.cmd));
   } else if (e.data.type === "schem") {
-    schemFd.push(new Uint8Array(e.data.bytes));
+    let payload = new Uint8Array(e.data.bytes);
+    if (e.data.at) {
+      const hdr = new TextEncoder().encode(JSON.stringify(e.data.at));
+      const framed = new Uint8Array(6 + hdr.length + payload.length);
+      framed.set([0x4c, 0x53, 0x48, 0x31, hdr.length >> 8, hdr.length & 0xff]); // "LSH1" + u16 len
+      framed.set(hdr, 6);
+      framed.set(payload, 6 + hdr.length);
+      payload = framed;
+    }
+    schemFd.push(payload);
     post({ type: "term", text: `[schem] pushed ${(e.data.bytes.byteLength / 1024).toFixed(1)} KiB to the running server\n` });
   } else if (e.data.type === "stdin") {
     if (runner) stdin.push(e.data.line);

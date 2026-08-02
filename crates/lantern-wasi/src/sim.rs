@@ -26,18 +26,19 @@ use pumpkin_world::generation::structure::template::{BlockStateResolver, Palette
 
 const SIM_SOCK: &str = "sim.sock";
 
-/// The last pasted schematic (raw bytes + paste height), set by schematic.rs.
-static SIM_SOURCE: Mutex<Option<(Vec<u8>, i32)>> = Mutex::new(None);
+/// The last pasted schematic (raw bytes + world-paste offset), set by schematic.rs.
+static SIM_SOURCE: Mutex<Option<(Vec<u8>, (i32, i32, i32))>> = Mutex::new(None);
 
-pub fn set_source(bytes: Vec<u8>, base_y: i32) {
-    *SIM_SOURCE.lock().unwrap() = Some((bytes, base_y));
+pub fn set_source(bytes: Vec<u8>, off: (i32, i32, i32)) {
+    *SIM_SOURCE.lock().unwrap() = Some((bytes, off));
 }
 
 struct RunningSim {
     sim: mc_tick::Simulation,
     /// Schematic bounding-box minimum: engine coords + this = schematic coords.
     min: (i32, i32, i32),
-    base_y: i32,
+    /// World-paste offset: schematic coords + this = world coords.
+    off: (i32, i32, i32),
 }
 
 fn parse_descriptor(descriptor: &str) -> PaletteEntry {
@@ -60,7 +61,7 @@ fn parse_descriptor(descriptor: &str) -> PaletteEntry {
 /// Vendored from nucleation's bridge: build a fully-wired Simulation from a
 /// schematic, settle mode "in world" (blocks stand as found, nothing re-runs
 /// onPlace).
-fn build_simulation(bytes: &[u8]) -> Result<RunningSim, String> {
+fn build_simulation(bytes: &[u8], off: (i32, i32, i32)) -> Result<RunningSim, String> {
     let schematic = crate::schematic::parse_any(bytes).map_err(|e| format!("parse: {e}"))?;
     let bb = schematic.get_bounding_box();
     let min = (bb.min.0, bb.min.1, bb.min.2);
@@ -187,11 +188,7 @@ fn build_simulation(bytes: &[u8]) -> Result<RunningSim, String> {
     // Settle mode InWorld: no place_on_place, no settle_with_order.
     sim.record();
 
-    let base_y = std::env::var("LANTERN_SCHEM_Y")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(-63);
-    Ok(RunningSim { sim, min, base_y })
+    Ok(RunningSim { sim, min, off })
 }
 
 async fn apply_changes(server: &Arc<Server>, running: &mut RunningSim) -> usize {
@@ -218,9 +215,9 @@ async fn apply_changes(server: &Arc<Server>, running: &mut RunningSim) -> usize 
         let Some(resolved) = BlockStateResolver::resolve_simple(&entry) else {
             continue;
         };
-        let wx = pos.x + running.min.0;
-        let wy = pos.y + running.min.1 + running.base_y;
-        let wz = pos.z + running.min.2;
+        let wx = pos.x + running.min.0 + running.off.0;
+        let wy = pos.y + running.min.1 + running.off.1;
+        let wz = pos.z + running.min.2 + running.off.2;
         level.get_or_fetch_chunk(Vector2::new(wx >> 4, wz >> 4), |_| ()).await;
         let block_pos = BlockPos(Vector3::new(wx, wy, wz));
         level.set_block_state(&block_pos, resolved.id);
@@ -272,7 +269,7 @@ pub fn spawn_control(server: Arc<Server>) {
                             let source = SIM_SOURCE.lock().unwrap().clone();
                             match source {
                                 None => tracing::warn!("sim: no schematic loaded to simulate"),
-                                Some((bytes, _y)) => match build_simulation(&bytes) {
+                                Some((bytes, off)) => match build_simulation(&bytes, off) {
                                     Ok(r) => {
                                         tracing::info!(
                                             "sim: mc-tick engine ON ({} ticks/s, vanilla phase order)",
@@ -296,9 +293,9 @@ pub fn spawn_control(server: Arc<Server>) {
                                 if let (Some(r), [x, y, z]) = (running.as_mut(), p.as_slice()) {
                                     // World coords → engine coords.
                                     let pos = mc_tick::Pos::new(
-                                        x - r.min.0,
-                                        y - r.min.1 - r.base_y,
-                                        z - r.min.2,
+                                        x - r.min.0 - r.off.0,
+                                        y - r.min.1 - r.off.1,
+                                        z - r.min.2 - r.off.2,
                                     );
                                     r.sim.use_block(pos);
                                     tracing::info!("sim: use_block at {x} {y} {z}");

@@ -79,7 +79,7 @@ pub(crate) fn parse_any(bytes: &[u8]) -> Result<nucleation::UniversalSchematic, 
     nucleation::UniversalSchematic::from_schematic(bytes).map_err(|e| format!("{e}"))
 }
 
-async fn paste(server: &Arc<Server>, bytes: &[u8]) {
+async fn paste(server: &Arc<Server>, bytes: &[u8], off: (i32, i32, i32)) {
     tracing::info!("schematic: parsing {} KiB…", bytes.len() / 1024);
     let schem = match parse_any(bytes) {
         Ok(s) => s,
@@ -89,8 +89,7 @@ async fn paste(server: &Arc<Server>, bytes: &[u8]) {
         }
     };
 
-    crate::sim::set_source(bytes.to_vec(), base_y());
-    let base_y = base_y();
+    crate::sim::set_source(bytes.to_vec(), off);
     let world = server.worlds.load()[0].clone();
     let level = world.level.clone();
     let air = Block::AIR.default_state.id;
@@ -134,7 +133,7 @@ async fn paste(server: &Arc<Server>, bytes: &[u8]) {
             unknown += 1;
             continue;
         };
-        let (x, y, z) = (pos.x, pos.y + base_y, pos.z);
+        let (x, y, z) = (pos.x + off.0, pos.y + off.1, pos.z + off.2);
         by_chunk
             .entry((x >> 4, z >> 4))
             .or_default()
@@ -185,8 +184,9 @@ async fn paste(server: &Arc<Server>, bytes: &[u8]) {
     }
 
     tracing::info!(
-        "schematic: done — {total} blocks in {:.1}s. Fly to 0 {base_y} 0.",
+        "schematic: done — {total} blocks in {:.1}s. Fly to {} {} {}.",
         start.elapsed().as_secs_f64(),
+        off.0, off.1, off.2,
     );
 }
 
@@ -202,8 +202,31 @@ pub fn spawn_import(server: Arc<Server>) {
         // Same settle delay the bench uses: a ticket filed in the first
         // instants of the scheduler's life can be missed (init race).
         tokio::time::sleep(Duration::from_secs(2)).await;
-        paste(&server, &bytes).await;
+        paste(&server, &bytes, (0, base_y(), 0)).await;
     });
+}
+
+/// Split an optional LSH1 placement header off a live frame.
+fn parse_frame_header(frame: &[u8]) -> ((i32, i32, i32), &[u8]) {
+    let default = (0, base_y(), 0);
+    if frame.len() < 6 || &frame[..4] != b"LSH1" {
+        return (default, frame);
+    }
+    let hlen = u16::from_be_bytes([frame[4], frame[5]]) as usize;
+    if frame.len() < 6 + hlen {
+        return (default, frame);
+    }
+    let hdr = &frame[6..6 + hlen];
+    let body = &frame[6 + hlen..];
+    let mut xyz = default;
+    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(hdr) {
+        xyz = (
+            v["x"].as_i64().unwrap_or(0) as i32,
+            v["y"].as_i64().unwrap_or(i64::from(base_y())) as i32,
+            v["z"].as_i64().unwrap_or(0) as i32,
+        );
+    }
+    (xyz, body)
 }
 
 /// Live reload: framed schematics pushed by the page over schem.sock.
@@ -227,8 +250,14 @@ pub fn spawn_live_reload(server: Arc<Server>) {
                     break;
                 }
                 let frame: Vec<u8> = acc.drain(..4 + flen).skip(4).collect();
-                tracing::info!("schematic: live reload requested ({} KiB)", frame.len() / 1024);
-                paste(&server, &frame).await;
+                // Optional placement header: "LSH1" + u16 BE len + JSON
+                // {"x":..,"y":..,"z":..}, then the schematic bytes.
+                let (off, body) = parse_frame_header(&frame);
+                tracing::info!(
+                    "schematic: live reload requested ({} KiB at {} {} {})",
+                    body.len() / 1024, off.0, off.1, off.2,
+                );
+                paste(&server, body, off).await;
             }
         }
     });

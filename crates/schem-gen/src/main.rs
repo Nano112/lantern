@@ -48,4 +48,18 @@ fn main() {
     let zip = nucleation::formats::world::to_world_zip(&clock, None).expect("world zip");
     std::fs::write("web/clock-world.zip", &zip).expect("write world zip");
     println!("wrote web/clock-world.zip ({} bytes)", zip.len());
+
+    // The same scene exported as an OLD world (DataVersion 4082, MC 1.21.4) —
+    // fixture for the in-browser DataConverter upgrade path.
+    let mut old = clock.clone();
+    let report = old.convert_to_data_version(4082);
+    println!("reverse-convert losses: {}", report.entries.len());
+    let opts = nucleation::formats::world::WorldExportOptions {
+        data_version: 4082,
+        version_name: "1.21.4".to_string(),
+        ..Default::default()
+    };
+    let zip = nucleation::formats::world::to_world_zip(&old, Some(opts)).expect("old world zip");
+    std::fs::write("web/clock-world-old.zip", &zip).expect("write old world zip");
+    println!("wrote web/clock-world-old.zip ({} bytes)", zip.len());
 }

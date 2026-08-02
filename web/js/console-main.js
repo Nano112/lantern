@@ -91,6 +91,19 @@ async function fetchSchematicBytes(raw) {
 }
 
 async function fetchSchematic() {
+  if (params.has("schemstage")) {
+    try {
+      const root = await navigator.storage.getDirectory();
+      const handle = await root.getFileHandle("import-schem.bin");
+      const bytes = new Uint8Array(await (await handle.getFile()).arrayBuffer());
+      await root.removeEntry("import-schem.bin").catch(() => {});
+      writeText(`[schem] loading staged schematic (${(bytes.length / 1024).toFixed(1)} KiB)\n`);
+      return bytes;
+    } catch {
+      writeText("[schem] no staged schematic found\n");
+      return null;
+    }
+  }
   const raw = params.get("schem");
   if (!raw) return null;
   return fetchSchematicBytes(raw);
@@ -105,10 +118,11 @@ fetchSchematic()
     );
     // fresh/world are one-shot: once consumed, the imported world lives in
     // state.bin — a manual reload must not wipe it or re-import.
-    if (params.has("fresh") || params.has("world")) {
+    if (params.has("fresh") || params.has("world") || params.has("schemstage")) {
       const clean = new URLSearchParams(location.search);
       clean.delete("fresh");
       clean.delete("world");
+      clean.delete("schemstage");
       const qs = clean.toString();
       history.replaceState(null, "", location.pathname + (qs ? `?${qs}` : ""));
     }
@@ -332,8 +346,7 @@ document.addEventListener("drop", async (e) => {
       }
     } else {
       const bytes = new Uint8Array(await file.arrayBuffer());
-      writeText(`[schem] dropped ${file.name} (${(bytes.length / 1024).toFixed(1)} KiB) — hot-swapping\n`);
-      farmWorker.postMessage({ type: "schem", bytes: bytes.buffer }, [bytes.buffer]);
+      showDropModal(file.name, bytes);
     }
   } catch (err) {
     writeText(`[drop] ${err.message ?? err}\n`);
@@ -357,3 +370,46 @@ async function copyMcAddr() {
 }
 mcCopyBtn?.addEventListener("click", copyMcAddr);
 mcAddrEl?.addEventListener("click", () => { mcAddrEl.select(); copyMcAddr(); });
+
+// --- schematic drop modal: paste at coords, or reboot into a fresh void world ---
+let pendingDrop = null;
+const dropModal = document.getElementById("drop-modal");
+function showDropModal(name, bytes) {
+  pendingDrop = { name, bytes };
+  document.getElementById("drop-modal-name").textContent = name;
+  dropModal.style.display = "flex";
+}
+document.getElementById("drop-cancel")?.addEventListener("click", () => {
+  pendingDrop = null;
+  dropModal.style.display = "none";
+});
+document.getElementById("drop-paste")?.addEventListener("click", () => {
+  if (!pendingDrop) return;
+  const at = {
+    x: parseInt(document.getElementById("drop-x").value, 10) || 0,
+    y: parseInt(document.getElementById("drop-y").value, 10) || 0,
+    z: parseInt(document.getElementById("drop-z").value, 10) || 0,
+  };
+  writeText(`[schem] pasting ${pendingDrop.name} at ${at.x} ${at.y} ${at.z}\n`);
+  farmWorker.postMessage({ type: "schem", bytes: pendingDrop.bytes.buffer, at }, [pendingDrop.bytes.buffer]);
+  pendingDrop = null;
+  dropModal.style.display = "none";
+});
+document.getElementById("drop-world")?.addEventListener("click", async () => {
+  if (!pendingDrop) return;
+  const { name, bytes } = pendingDrop;
+  pendingDrop = null;
+  dropModal.style.display = "none";
+  writeText(`[schem] staging ${name} — rebooting into a fresh void world around it\n`);
+  const root = await navigator.storage.getDirectory();
+  const handle = await root.getFileHandle("import-schem.bin", { create: true });
+  const w = await handle.createWritable();
+  await w.write(bytes);
+  await w.close();
+  const next = new URLSearchParams();
+  if (params.has("offline")) next.set("offline", params.get("offline") || "1");
+  next.set("fresh", "1");
+  next.set("gen", "void");
+  next.set("schemstage", "1");
+  location.href = `${location.pathname}?${next}`;
+}); 
