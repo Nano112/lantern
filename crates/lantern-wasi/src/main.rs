@@ -8,6 +8,7 @@ mod net_bridge;
 mod persist;
 mod schematic;
 mod sim;
+mod worldswap;
 
 use pumpkin::PumpkinServer;
 use pumpkin::data::VanillaData;
@@ -95,6 +96,7 @@ async fn run() {
     schematic::spawn_import(server.server.clone());
     schematic::spawn_live_reload(server.server.clone());
     sim::spawn_control(server.server.clone());
+    worldswap::spawn_control(server.server.clone());
 
     // Boot self-test: prove the http.sock bridge reaches Mojang via the proxy.
     if online {

@@ -26,10 +26,11 @@ const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
 fn skip(path: &Path) -> bool {
     let p = path.to_string_lossy();
     let p = p.trim_start_matches("./");
-    matches!(
-        p,
-        "state.bin" | "net.sock" | "http.sock" | "metrics.sock" | "import.schem"
-    ) || p.starts_with("logs")
+    // Any .sock is a virtual fd bridge — reading one during a snapshot walk
+    // would steal queued frames (e.g. a pending world swap command).
+    matches!(p, "state.bin" | "import.schem")
+        || p.ends_with(".sock")
+        || p.starts_with("logs")
 }
 
 pub fn restore() -> std::io::Result<(usize, usize)> {

@@ -121,14 +121,21 @@ Drop files anywhere on the console page:
 
 - **`.schem` / `.litematic` / legacy `.schematic`** — hot-swaps the running
   server's pasted build (format detected by content, via nucleation).
-- **world `.zip`** (a Java world save containing `level.dat`) — the zip is
-  staged in OPFS and the page reboots into it: the archive is inflated in the
-  farm worker (browser-native `DecompressionStream`, no zip library) and
+- **world `.zip`** (a Java world save containing `level.dat`) — inflated in
+  the farm worker (browser-native `DecompressionStream`, no zip library) and
   mounted at `./world`, so Pumpkin reads `level.dat` and loads chunks lazily
   from the region files. Ungenerated areas fall to the active generator.
   `DIM1`/`DIM-1`, `session.lock` and macOS zip litter are skipped; the world
-  is captured by the normal OPFS persistence on the next autosave, so the
-  import is one-shot (`?fresh=1&world=1` strip themselves after boot).
+  is captured by the normal OPFS persistence on the next autosave.
+  - **Live swap:** dropped while the server is running, the world is replaced
+    in place — the page swaps the files under `./world`, signals `world.sock`,
+    and the server purges its chunk cache and re-sends the loaded chunks to
+    connected players. Nobody gets kicked. (level_info/seed keep their
+    boot-time values until the next reload.)
+  - **Version guard:** the page reads `DataVersion` from `level.dat` before
+    doing anything; Pumpkin supports 4435–4903 (MC 1.21.9 – 26.2, no
+    DataFixerUpper). Older worlds get a clear refusal — open them once in a
+    current Minecraft to upgrade, then re-zip.
 
 > Gotcha: don't parse schematics through nucleation's `FormatManager` in the
 > wasm binary — registering every importer links in the world/zip readers and

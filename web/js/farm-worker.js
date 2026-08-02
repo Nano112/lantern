@@ -471,6 +471,42 @@ async function loadFromOpfs(fresh) {
 // the WASI fs so Pumpkin's anvil reader loads its chunks lazily.
 
 const WORLD_ZIP_FILE = "import-world.zip";
+const worldSwapFd = new SchemFd();
+
+// Pumpkin's supported world DataVersion window (pumpkin-world/src/world_info):
+// 4435 (MC 1.21.9) … 4903 (MC 26.2). Anything older needs a pass through a
+// current Minecraft to upgrade — refuse it with a message, don't panic wasm.
+const MIN_WORLD_DATA_VERSION = 4435;
+const MAX_WORLD_DATA_VERSION = 4903;
+
+async function levelDatDataVersion(bytes) {
+  // level.dat is gzipped NBT; scan the inflated bytes for the TAG_Int
+  // "DataVersion" (0x03, u16 name length 11, name, i32 BE value).
+  const raw = new Uint8Array(await new Response(
+    new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip")),
+  ).arrayBuffer());
+  const name = new TextEncoder().encode("DataVersion");
+  outer: for (let i = 0; i + 18 <= raw.length; i++) {
+    if (raw[i] !== 0x03 || raw[i + 1] !== 0 || raw[i + 2] !== 11) continue;
+    for (let j = 0; j < 11; j++) if (raw[i + 3 + j] !== name[j]) continue outer;
+    return new DataView(raw.buffer, raw.byteOffset + i + 14).getInt32(0);
+  }
+  return null;
+}
+
+async function checkWorldVersion(entries) {
+  const ld = entries.filter((e) => e.name === "level.dat" || e.name.endsWith("/level.dat"))
+    .reduce((a, b) => (!a || b.name.length < a.name.length ? b : a), null);
+  if (!ld) throw new Error("no level.dat in the zip — is this a world save?");
+  const dv = await levelDatDataVersion(ld.data);
+  if (dv !== null && (dv < MIN_WORLD_DATA_VERSION || dv > MAX_WORLD_DATA_VERSION)) {
+    throw new Error(
+      `world is DataVersion ${dv} — Pumpkin supports ${MIN_WORLD_DATA_VERSION}–${MAX_WORLD_DATA_VERSION} `
+      + `(MC 1.21.9 – 26.2). Open it once in a current Minecraft to upgrade it, then re-zip.`,
+    );
+  }
+  return dv;
+}
 
 async function takeWorldZipFromOpfs() {
   try {
@@ -558,10 +594,35 @@ function buildWorldDir(entries) {
 
 let runner = null;
 let started = false;
+let cwdRootDir = null;
 const pendingStdin = [];
 
+// Live world swap: replace ./world's contents in place, then tell the server
+// to purge its chunk cache and re-send chunks — no reboot, no kick.
+async function liveWorldSwap(zipBytes) {
+  const entries = await unzipAll(new Uint8Array(zipBytes));
+  await checkWorldVersion(entries);
+  const { root, files, bytes } = buildWorldDir(entries);
+  let dir = cwdRootDir.contents.get("world");
+  if (dir instanceof Directory) {
+    dir.contents.clear();
+    for (const [k, v] of root.contents) {
+      if (v instanceof Directory) v.parent = dir;
+      dir.contents.set(k, v);
+    }
+  } else {
+    root.parent = cwdRootDir;
+    cwdRootDir.contents.set("world", root);
+  }
+  post({ type: "term", text: `[world] swapped in ${files} files (${(bytes / 1024 / 1024).toFixed(1)} MiB) — reloading chunks live\n` });
+  worldSwapFd.push(new TextEncoder().encode("swap"));
+}
+
 self.onmessage = (e) => {
-  if (e.data.type === "sim") {
+  if (e.data.type === "worldswap") {
+    liveWorldSwap(e.data.bytes).catch((err) =>
+      post({ type: "term", text: `[world] swap failed: ${err.message ?? err}\n` }));
+  } else if (e.data.type === "sim") {
     simFd.push(new TextEncoder().encode(e.data.cmd));
   } else if (e.data.type === "schem") {
     schemFd.push(new Uint8Array(e.data.bytes));
@@ -594,7 +655,9 @@ async function boot({ env, fresh, schem, world }) {
       const zip = await takeWorldZipFromOpfs();
       if (!zip) throw new Error("no staged world zip found in OPFS");
       post({ type: "term", text: `[world] inflating ${(zip.length / 1024 / 1024).toFixed(1)} MiB zip…\n` });
-      const { root, files, bytes } = buildWorldDir(await unzipAll(zip));
+      const entries = await unzipAll(zip);
+      await checkWorldVersion(entries);
+      const { root, files, bytes } = buildWorldDir(entries);
       cwdEntries.set("world", root);
       post({ type: "term", text: `[world] mounted ${files} files (${(bytes / 1024 / 1024).toFixed(1)} MiB) at ./world — Pumpkin will load its chunks\n` });
     } catch (e) {
@@ -603,7 +666,9 @@ async function boot({ env, fresh, schem, world }) {
   }
   cwdEntries.set("schem.sock", new NetSockInode(schemFd));
   cwdEntries.set("sim.sock", new NetSockInode(simFd));
+  cwdEntries.set("world.sock", new NetSockInode(worldSwapFd));
   const cwd = new PreopenDirectory(".", cwdEntries);
+  cwdRootDir = cwd.dir;
   const farm = new WASIFarm(stdin, new TerminalOut(), new TerminalOut(), [cwd], {
     allocator_size: 64 * 1024 * 1024, // world snapshots move through here
   });

@@ -113,10 +113,15 @@ fetchSchematic()
       history.replaceState(null, "", location.pathname + (qs ? `?${qs}` : ""));
     }
   });
+let serverRunning = false;
 farmWorker.onmessage = (e) => {
   const m = e.data;
   if (m.type === "term") writeText(m.text);
-  else if (m.type === "status") statusEl.textContent = m.status;
+  else if (m.type === "status") {
+    statusEl.textContent = m.status;
+    if (/server running/.test(m.status)) serverRunning = true;
+    if (/exited|crashed/.test(m.status)) serverRunning = false;
+  }
   else if (m.type === "room") {
     const h = location.hostname;
     const sidecar = h !== "localhost" && (!location.port || location.port === "443");
@@ -317,7 +322,14 @@ document.addEventListener("drop", async (e) => {
   if (!file) return;
   try {
     if (/\.zip$/i.test(file.name)) {
-      await importWorldZip(file);
+      if (serverRunning) {
+        // Live swap: no reboot, no kick — chunks reload in place.
+        const bytes = await file.arrayBuffer();
+        writeText(`[world] dropped ${file.name} (${(bytes.byteLength / 1024 / 1024).toFixed(1)} MiB) — swapping live\n`);
+        farmWorker.postMessage({ type: "worldswap", bytes }, [bytes]);
+      } else {
+        await importWorldZip(file);
+      }
     } else {
       const bytes = new Uint8Array(await file.arrayBuffer());
       writeText(`[schem] dropped ${file.name} (${(bytes.length / 1024).toFixed(1)} KiB) — hot-swapping\n`);
