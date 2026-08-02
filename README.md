@@ -83,7 +83,29 @@ URL params: `?offline=1` (cracked/bot access), `?fresh=1` (wipe saved world),
 `?gen=void|flat`.
 
 > `crates/lantern-wasi` currently depends on Nucleation by local path — point
-> it at your checkout of [Schem-at/Nucleation](https://github.com/Schem-at/Nucleation).
+> it at your checkout of [Schem-at/Nucleation](https://github.com/Schem-at/Nucleation)
+> (which also provides the `mc-tick` engine crate at `crates/mc-tick`).
+
+## mc-tick: swappable logic engine
+
+The pasted schematic can be simulated by Nucleation's **mc-tick** engine — a
+vanilla-accurate headless tick engine (redstone, pistons, entities,
+deterministic RNG) — as an alternative to Pumpkin's own logic. Toggle it from
+the console page ("logic engine: mc-tick / pumpkin"): when on, a 20 Hz loop
+steps the simulation, drains its recorded block changes, writes them into the
+Pumpkin world and broadcasts `CBlockUpdate`s to connected clients.
+
+- Engine commands travel over `sim.sock` (same virtual-fd pattern as the other
+  bridges): `on`, `off`, and `use X Y Z` (world coords) to interact — e.g.
+  flip a lever. From the page console: `lanternSim("use 0 -62 0")`.
+- The engine refuses schematics containing blocks it has no behaviour for
+  (correctness over coverage) — you'll see `sim: refused to start: …`.
+- `crates/schem-gen` writes `web/clock.schem`, a test scene: an observer pair
+  plus a lever→wire→lamp run. Verified end-to-end: flipping the lever applies
+  the wire/lamp changes into the world, including vanilla's delayed lamp-off.
+- Wiring is vendored from Nucleation's bridge in
+  `crates/lantern-wasi/src/sim.rs` (settle mode "in world"); worth upstreaming
+  as a public embed API.
 
 ## Performance notes (all measured, wasm, M-series)
 

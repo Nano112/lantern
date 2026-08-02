@@ -4,3 +4,4 @@ proxy/proxy
 proxy/certs/
 run/
 web/test.schem
+web/clock.schem

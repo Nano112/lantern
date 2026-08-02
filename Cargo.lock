@@ -1897,6 +1897,7 @@ name = "lantern-wasi"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "mc-tick",
  "nucleation",
  "pumpkin",
  "pumpkin-config",
@@ -2035,6 +2036,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4facc753ae494aeb6e3c22f839b158aebd4f9270f55cd3c79906c45476c47ab4"
 
 [[package]]
+name = "mc-tick"
+version = "0.1.0"
+dependencies = [
+ "smallvec",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2156,7 +2165,7 @@ dependencies = [
 
 [[package]]
 name = "nucleation"
-version = "0.4.1"
+version = "0.9.2"
 dependencies = [
  "anyhow",
  "bincode",

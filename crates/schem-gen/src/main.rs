@@ -18,4 +18,25 @@ fn main() {
     let bytes = schem.to_schematic().expect("serialize");
     std::fs::write("web/test.schem", &bytes).expect("write");
     println!("wrote web/test.schem ({} bytes)", bytes.len());
+
+    // A self-running contraption for the mc-tick engine test: two observers
+    // staring at each other form a clock; dust alongside shows the pulses.
+    let mut clock = nucleation::UniversalSchematic::new("lantern-clock".to_string());
+    for x in 0..4 {
+        for z in 0..3 {
+            clock.set_block_str(x, 0, z, "minecraft:smooth_stone");
+        }
+    }
+    clock.set_block_from_string(1, 1, 1, "minecraft:observer[facing=east]").unwrap();
+    clock.set_block_from_string(2, 1, 1, "minecraft:observer[facing=west]").unwrap();
+    clock.set_block_str(0, 1, 1, "minecraft:redstone_wire");
+    clock.set_block_str(3, 1, 1, "minecraft:redstone_wire");
+    // Interactive branch: lever → wire → lamp, driven by "use" over sim.sock.
+    clock.set_block_from_string(0, 1, 0, "minecraft:lever[face=floor,facing=east,powered=false]").unwrap();
+    clock.set_block_str(1, 1, 0, "minecraft:redstone_wire");
+    clock.set_block_str(2, 1, 0, "minecraft:redstone_wire");
+    clock.set_block_from_string(3, 1, 0, "minecraft:redstone_lamp[lit=false]").unwrap();
+    let bytes = clock.to_schematic().expect("serialize clock");
+    std::fs::write("web/clock.schem", &bytes).expect("write clock");
+    println!("wrote web/clock.schem ({} bytes)", bytes.len());
 }

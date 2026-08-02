@@ -274,6 +274,7 @@ class SchemFd extends Fd {
 }
 
 const schemFd = new SchemFd();
+const simFd = new SchemFd();
 
 // state.bin: reads serve the OPFS snapshot loaded at boot; writes buffer the
 // new snapshot and flush it to OPFS on close.
@@ -436,7 +437,9 @@ let started = false;
 const pendingStdin = [];
 
 self.onmessage = (e) => {
-  if (e.data.type === "schem") {
+  if (e.data.type === "sim") {
+    simFd.push(new TextEncoder().encode(e.data.cmd));
+  } else if (e.data.type === "schem") {
     schemFd.push(new Uint8Array(e.data.bytes));
     post({ type: "term", text: `[schem] pushed ${(e.data.bytes.byteLength / 1024).toFixed(1)} KiB to the running server\n` });
   } else if (e.data.type === "stdin") {
@@ -463,6 +466,7 @@ async function boot({ env, fresh, schem }) {
   ]);
   if (schem?.length) cwdEntries.set("import.schem", new File(schem));
   cwdEntries.set("schem.sock", new NetSockInode(schemFd));
+  cwdEntries.set("sim.sock", new NetSockInode(simFd));
   const cwd = new PreopenDirectory(".", cwdEntries);
   const farm = new WASIFarm(stdin, new TerminalOut(), new TerminalOut(), [cwd], {
     allocator_size: 64 * 1024 * 1024, // world snapshots move through here

@@ -71,6 +71,7 @@ async fn paste(server: &Arc<Server>, bytes: &[u8]) {
         }
     };
 
+    crate::sim::set_source(bytes.to_vec(), base_y());
     let base_y = base_y();
     let world = server.worlds.load()[0].clone();
     let level = world.level.clone();

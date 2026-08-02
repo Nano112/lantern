@@ -244,3 +244,17 @@ if (schemBtn) {
     if (e.key === "Enter") schemBtn.click();
   });
 }
+
+// --- mc-tick simulation toggle ---
+const simOn = document.getElementById("sim-on");
+const simOff = document.getElementById("sim-off");
+simOn?.addEventListener("click", () => {
+  farmWorker.postMessage({ type: "sim", cmd: "on" });
+  writeText("[sim] mc-tick engine requested ON\n");
+});
+simOff?.addEventListener("click", () => {
+  farmWorker.postMessage({ type: "sim", cmd: "off" });
+  writeText("[sim] mc-tick engine requested OFF\n");
+});
+// Debug/scripting hook: lanternSim("use 0 -62 0")
+window.lanternSim = (cmd) => farmWorker.postMessage({ type: "sim", cmd: String(cmd) });
