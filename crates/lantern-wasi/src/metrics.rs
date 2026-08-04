@@ -19,7 +19,18 @@ pub fn spawn(server: Arc<Server>) {
             ticker.tick().await;
 
             let mspt = server.get_mspt();
-            let players = server.get_all_players().len();
+            let all_players = server.get_all_players();
+    		let players = all_players.len();
+            let player_list: Vec<serde_json::Value> = all_players
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "name": p.gameprofile.name,
+                        "gamemode": format!("{:?}", p.gamemode.load()),
+                    })
+                })
+                .collect();
+            let player_list = serde_json::to_string(&player_list).unwrap_or_else(|_| "[]".into());
             let mut chunks = 0usize;
             for world in server.worlds.load().iter() {
                 chunks += world.level.loaded_chunk_count();
@@ -36,7 +47,7 @@ pub fn spawn(server: Arc<Server>) {
             let net_outq = crate::net_bridge::OUT_QUEUE.load(std::sync::atomic::Ordering::Relaxed);
 
             let line = format!(
-                "{{\"mspt\":{mspt:.2},\"players\":{players},\"chunks\":{chunks},\"mem_mb\":{mem_mb:.1},\"uptime_s\":{},\"tasks\":{tasks},\"blocking\":{blocking},\"idle_blocking\":{idle_blocking},\"net_streams\":{net_streams},\"net_outq\":{net_outq}}}\n",
+                "{{\"mspt\":{mspt:.2},\"players\":{players},\"chunks\":{chunks},\"mem_mb\":{mem_mb:.1},\"uptime_s\":{},\"tasks\":{tasks},\"blocking\":{blocking},\"idle_blocking\":{idle_blocking},\"net_streams\":{net_streams},\"net_outq\":{net_outq},\"player_list\":{player_list}}}\n",
                 start.elapsed().as_secs()
             );
             crate::net_bridge::fd_write_all(fd, line.as_bytes());

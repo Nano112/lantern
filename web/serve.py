@@ -4,6 +4,12 @@
 import http.server, os, sys
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        # The console IS the site: serve it at the root.
+        if self.path == "/" or self.path.startswith("/?"):
+            self.path = "/console.html" + (self.path[1:] if self.path.startswith("/?") else "")
+        return super().do_GET()
+
     def send_head(self):
         self._etag = None
         path = self.translate_path(self.path)

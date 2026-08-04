@@ -39,6 +39,8 @@ function writeText(text) {
 const farmWorker = new Worker("./dist/farm-worker.js", { type: "module" });
 const params = new URLSearchParams(location.search);
 const env = [`LANTERN_ONLINE=${params.has("offline") ? "0" : "1"}`];
+const savedMotd = localStorage.getItem("lantern-motd") || "";
+if (savedMotd) env.push(`LANTERN_MOTD=${savedMotd}`);
 if (params.has("bench")) env.push(`LANTERN_BENCH=${params.get("bench")}`);
 
 // Schematic-as-world: ?schem=<url> fetches the file (schemat.io URLs are
@@ -153,6 +155,7 @@ farmWorker.onmessage = (e) => {
     roomEl.style.color = m.room === "default" ? "#9a8f7a" : "#e0a458";
   } else if (m.type === "metrics") {
     onMetrics(m.data);
+    if (m.data && Array.isArray(m.data.player_list)) renderPlayers(m.data.player_list);
   } else if (m.type === "error") {
     statusEl.textContent = "crashed — see console";
     writeText(`\n[lantern] ${m.error}\n`);
@@ -413,3 +416,83 @@ document.getElementById("drop-world")?.addEventListener("click", async () => {
   next.set("schemstage", "1");
   location.href = `${location.pathname}?${next}`;
 }); 
+
+// --- server settings card ---
+const motdInput = document.getElementById("cfg-motd");
+if (motdInput) {
+  motdInput.value = localStorage.getItem("lantern-motd") || "";
+  motdInput.addEventListener("change", () => {
+    localStorage.setItem("lantern-motd", motdInput.value);
+    writeText(`[cfg] MOTD saved — applies on the next world reboot\n`);
+  });
+}
+const genSelect = document.getElementById("cfg-gen");
+if (genSelect) genSelect.value = (gen || "normal");
+document.getElementById("cfg-newworld")?.addEventListener("click", () => {
+  if (!confirm("Wipe the saved world and reboot with the selected generator?")) return;
+  const next = new URLSearchParams();
+  if (params.has("offline")) next.set("offline", params.get("offline") || "1");
+  const g = genSelect?.value || "normal";
+  if (g !== "normal") next.set("gen", g);
+  next.set("fresh", "1");
+  location.href = `${location.pathname}?${next}`;
+});
+
+// --- player list + right-click actions ---
+const plMenu = document.getElementById("pl-menu");
+function sendCmd(line) {
+  writeText(`> ${line}\n`);
+  farmWorker.postMessage({ type: "stdin", line: `${line}\n` });
+}
+function menuItem(label, fn) {
+  const el = document.createElement("div");
+  el.textContent = label;
+  el.style.cssText = "padding:5px 10px; border-radius:4px; cursor:pointer; color:#e8dcc8;";
+  el.addEventListener("mouseenter", () => el.style.background = "#33291d");
+  el.addEventListener("mouseleave", () => el.style.background = "none");
+  el.addEventListener("click", () => { fn(); hideMenu(); });
+  return el;
+}
+function hideMenu() { plMenu.style.display = "none"; }
+document.addEventListener("click", hideMenu);
+function showPlayerMenu(ev, name) {
+  ev.preventDefault();
+  plMenu.innerHTML = "";
+  plMenu.append(
+    menuItem(`⭐ op ${name}`, () => sendCmd(`op ${name}`)),
+    menuItem(`✖ deop ${name}`, () => sendCmd(`deop ${name}`)),
+  );
+  const gmLabel = document.createElement("div");
+  gmLabel.textContent = "gamemode ▸";
+  gmLabel.style.cssText = "padding:5px 10px; color:#9a8f7a; font-size:11px; text-transform:uppercase; letter-spacing:.06em;";
+  plMenu.append(gmLabel);
+  for (const gm of ["creative", "survival", "spectator", "adventure"]) {
+    plMenu.append(menuItem(`  ${gm}`, () => sendCmd(`gamemode ${gm} ${name}`)));
+  }
+  plMenu.append(
+    menuItem(`⌂ tp to spawn`, () => sendCmd(`tp ${name} 0 -60 0`)),
+    menuItem(`🚪 kick ${name}`, () => sendCmd(`kick ${name}`)),
+  );
+  plMenu.style.left = `${Math.min(ev.clientX, innerWidth - 180)}px`;
+  plMenu.style.top = `${Math.min(ev.clientY, innerHeight - 260)}px`;
+  plMenu.style.display = "block";
+}
+function renderPlayers(list) {
+  const box = document.getElementById("player-list");
+  const count = document.getElementById("pl-count");
+  if (!box) return;
+  count.textContent = list.length ? `(${list.length})` : "";
+  box.innerHTML = "";
+  if (!list.length) {
+    box.innerHTML = '<span style="color:#5d5646;">nobody online — right-click a player here for actions</span>';
+    return;
+  }
+  for (const p of list) {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex; gap:8px; align-items:center; padding:3px 6px; border-radius:4px; cursor:context-menu;";
+    row.innerHTML = `<span style="color:#7fb069;">●</span><span>${p.name}</span><span style="color:#9a8f7a; font-size:11px; margin-left:auto;">${(p.gamemode || "").toLowerCase()}</span>`;
+    row.addEventListener("contextmenu", (ev) => showPlayerMenu(ev, p.name));
+    row.addEventListener("click", (ev) => showPlayerMenu(ev, p.name));
+    box.append(row);
+  }
+}

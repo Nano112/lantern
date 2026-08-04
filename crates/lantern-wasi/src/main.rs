@@ -56,6 +56,11 @@ async fn run() {
     // Online mode works via the host page's http.sock bridge (Mojang calls are
     // reverse-proxied with CORS by the lantern proxy). ?offline=1 in the page
     // URL turns it off for cracked/bot testing.
+    if let Ok(motd) = std::env::var("LANTERN_MOTD")
+        && !motd.trim().is_empty()
+    {
+        config.advanced.networking.java.motd = motd;
+    }
     let online = std::env::var("LANTERN_ONLINE").map(|v| v != "0").unwrap_or(true);
     config.advanced.networking.java.online_mode = online;
     config.advanced.networking.java.encryption = online;
