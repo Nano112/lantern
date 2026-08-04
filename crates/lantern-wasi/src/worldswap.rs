@@ -615,6 +615,201 @@ async fn reset_sdf(server: &Arc<Server>, payload: &[u8]) {
     swap(server, false).await;
 }
 
+// ── Earth streamer: dynamic real-world regions ────────────────────────────
+// docs/earth-streamer.md. Regions are 512-block squares; the page fetches
+// them on demand (surfaced via metrics "earth_needed") and pushes them back
+// as "region:" frames.
+
+pub const EARTH_REGION: i32 = 512;
+
+struct EarthRegion {
+    heights: Vec<i32>,
+    width: i32,
+    depth: i32,
+    step: i32,
+    surface: u16,
+    dirt: u16,
+    sub: u16,
+    water: u16,
+    water_y: i32,
+    source: Option<nucleation::world_generation::ProjectedFootprintChunkSource>,
+}
+
+#[derive(Default)]
+struct EarthState {
+    regions: std::collections::HashMap<(i32, i32), EarthRegion>,
+    needed: std::collections::BTreeSet<(i32, i32)>,
+}
+
+static EARTH: std::sync::Mutex<Option<EarthState>> = std::sync::Mutex::new(None);
+
+/// Regions the generator wants but doesn't have — polled into metrics.
+pub fn earth_needed() -> Vec<(i32, i32)> {
+    EARTH
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|e| e.needed.iter().copied().take(6).collect())
+        .unwrap_or_default()
+}
+
+fn resolve_block(name: &str) -> u16 {
+    use pumpkin_world::generation::structure::template::{BlockStateResolver, PaletteEntry};
+    let e = PaletteEntry::with_properties(name.to_string(), Vec::new());
+    BlockStateResolver::resolve_simple(&e).map_or(0, |s| s.id.as_u16())
+}
+
+async fn earth_start(server: &Arc<Server>, payload: &[u8]) {
+    let world = server.worlds.load()[0].clone();
+    let level = world.level.clone();
+    let v: serde_json::Value = match serde_json::from_slice(payload) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("earth: bad payload: {e}");
+            return;
+        }
+    };
+    *EARTH.lock().unwrap() = Some(EarthState::default());
+    tracing::info!(
+        "earth: world anchored at {} {} — regions stream as explored",
+        v["lat"], v["lon"]
+    );
+
+    let fill = std::sync::Arc::new(move |cx: i32, cz: i32| {
+        let rx = (cx * 16).div_euclid(EARTH_REGION);
+        let rz = (cz * 16).div_euclid(EARTH_REGION);
+        let mut guard = EARTH.lock().unwrap();
+        let Some(state) = guard.as_mut() else { return Vec::new() };
+        let Some(region) = state.regions.get(&(rx, rz)) else {
+            state.needed.insert((rx, rz));
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let (ox, oz) = (rx * EARTH_REGION, rz * EARTH_REGION);
+        for bx in 0..16 {
+            for bz in 0..16 {
+                let wx = cx * 16 + bx;
+                let wz = cz * 16 + bz;
+                let gx = ((wx - ox) / region.step).clamp(0, region.width - 1);
+                let gz = ((wz - oz) / region.step).clamp(0, region.depth - 1);
+                let h = region.heights[(gz * region.width + gx) as usize].max(1);
+                for y in 1..=h.max(region.water_y) {
+                    let id = if y > h {
+                        region.water
+                    } else if y == h {
+                        if h <= region.water_y { region.sub } else { region.surface }
+                    } else if y >= h - 3 {
+                        region.dirt
+                    } else {
+                        region.sub
+                    };
+                    if id != 0 {
+                        out.push((wx, y, wz, id));
+                    }
+                }
+            }
+        }
+        if let Some(src) = &region.source {
+            use nucleation::world_generation::{ChunkRequest, ChunkSource};
+            if let Ok(res) = src.generate(ChunkRequest::new(cx, cz)) {
+                for (x, y, z, st) in res.chunk().blocks() {
+                    let id = resolve_block(&format!(
+                        "{}{}",
+                        st.name,
+                        "" // properties ignored for footprint blocks (plain blocks)
+                    ));
+                    if id != 0 {
+                        out.push((x, y, z, id));
+                    }
+                }
+            }
+        }
+        out
+    });
+    level.lantern_swap_generator_chunks(
+        pumpkin_util::world_seed::Seed(0),
+        fill,
+        "minecraft:plains".to_string(),
+    );
+    let _ = std::fs::remove_dir_all("world");
+    let _ = std::fs::remove_file("schem_prev.bin");
+    for _ in 0..2 {
+        level
+            .lantern_drop_all_chunks
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        level.chunk_loading.lock().unwrap().send_change();
+        tokio::time::sleep(Duration::from_millis(125)).await;
+    }
+    crate::metrics::set_activity("earth world — waiting for first regions…");
+    swap(server, false).await;
+}
+
+async fn earth_region(server: &Arc<Server>, payload: &[u8]) {
+    let v: serde_json::Value = match serde_json::from_slice(payload) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("earth: bad region payload: {e}");
+            return;
+        }
+    };
+    let (rx, rz) = (
+        v["rx"].as_i64().unwrap_or(0) as i32,
+        v["rz"].as_i64().unwrap_or(0) as i32,
+    );
+    let heights: Vec<i32> = v["heights"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|x| x.as_i64().map(|n| n as i32)).collect())
+        .unwrap_or_default();
+    let width = v["width"].as_i64().unwrap_or(0) as i32;
+    if width <= 0 || heights.is_empty() {
+        tracing::warn!("earth: region {rx},{rz} has no terrain");
+        return;
+    }
+    let source = v["footprints"].as_array().and_then(|f| {
+        if f.is_empty() {
+            return None;
+        }
+        let fps = nucleation::geo::parse_footprints_json(&v["footprints"].to_string()).ok()?;
+        let prov = nucleation::world_generation::SourceProvenance::new("earth", "1").ok()?;
+        nucleation::world_generation::ProjectedFootprintChunkSource::new(fps, None, prov).ok()
+    });
+    let region = EarthRegion {
+        depth: heights.len() as i32 / width,
+        heights,
+        width,
+        step: v["step"].as_i64().unwrap_or(2) as i32,
+        surface: resolve_block(v["surface"].as_str().unwrap_or("minecraft:grass_block")),
+        dirt: resolve_block("minecraft:dirt"),
+        sub: resolve_block("minecraft:stone"),
+        water: resolve_block("minecraft:water"),
+        water_y: v["waterY"].as_i64().unwrap_or(0) as i32,
+        source,
+    };
+    let buildings = v["footprints"].as_array().map_or(0, Vec::len);
+    {
+        let mut guard = EARTH.lock().unwrap();
+        if let Some(state) = guard.as_mut() {
+            state.regions.insert((rx, rz), region);
+            state.needed.remove(&(rx, rz));
+            tracing::info!(
+                "earth: region {rx},{rz} loaded ({buildings} features, {} cached)",
+                state.regions.len()
+            );
+        } else {
+            return;
+        }
+    }
+    // Re-generate the placeholder chunks now that real data exists.
+    let world = server.worlds.load()[0].clone();
+    let level = world.level.clone();
+    level
+        .lantern_drop_all_chunks
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    level.chunk_loading.lock().unwrap().send_change();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    swap(server, false).await;
+}
+
 /// Old-version world zip: run it through nucleation's DataConverter
 /// (PaperMC port — block states, block entities, items, entities), re-emit
 /// current-version world files into ./world, then hot-swap. Bounded to a
@@ -681,7 +876,11 @@ pub fn spawn_control(server: Arc<Server>) {
                     break;
                 }
                 let frame: Vec<u8> = acc.drain(..4 + flen).skip(4).collect();
-                if frame.starts_with(b"chunksrc:") {
+                if frame.starts_with(b"earth:") {
+                    earth_start(&server, &frame["earth:".len()..]).await;
+                } else if frame.starts_with(b"region:") {
+                    earth_region(&server, &frame["region:".len()..]).await;
+                } else if frame.starts_with(b"chunksrc:") {
                     reset_chunk_source(&server, &frame["chunksrc:".len()..]).await;
                 } else if frame.starts_with(b"sdf:") {
                     reset_sdf(&server, &frame["sdf:".len()..]).await;

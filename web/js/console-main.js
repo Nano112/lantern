@@ -158,6 +158,9 @@ farmWorker.onmessage = (e) => {
   } else if (m.type === "metrics") {
     onMetrics(m.data);
     if (m.data && Array.isArray(m.data.player_list)) renderPlayers(m.data.player_list);
+    if (m.data && Array.isArray(m.data.earth_needed) && earth.origin) {
+      for (const [rx, rz] of m.data.earth_needed) earthFetchRegion(rx, rz);
+    }
     const act = document.getElementById("activity");
     if (act) {
       const text = (m.data && m.data.activity) || "";
@@ -487,7 +490,8 @@ nwGenSel?.addEventListener("change", () => {
 });
 nwSdfPreset?.addEventListener("change", () => {
   nwSdfJson.style.display = nwSdfPreset.value === "custom" ? "block" : "none";
-  document.getElementById("nw-osm-row").style.display = nwSdfPreset.value === "osm" ? "flex" : "none";
+  const geo = nwSdfPreset.value === "osm" || nwSdfPreset.value === "earth";
+  document.getElementById("nw-osm-row").style.display = geo ? "flex" : "none";
 });
 
 // Overpass → nucleation footprints: query buildings around lat/lon, project
@@ -512,8 +516,13 @@ async function fetchTerrainGrid(lat, lon, radius, base) {
       loads.push((async () => {
         const img = new Image();
         img.crossOrigin = "anonymous";
+        const done = new Promise((res, rej) => {
+          img.onload = res;
+          img.onerror = () => rej(new Error("tile"));
+          setTimeout(() => rej(new Error("tile timeout")), 20000);
+        });
         img.src = `${base}/api/terrain/elevation-tiles-prod/terrarium/${Z}/${X}/${Y}.png`;
-        await img.decode();
+        await done;
         const c = document.createElement("canvas");
         c.width = c.height = 256;
         const g = c.getContext("2d");
@@ -678,6 +687,14 @@ document.getElementById("nw-create")?.addEventListener("click", async () => {
       catch (e) { writeText(`[world] bad ${label} JSON: ${e.message}\n`); return null; }
     };
     // Streamed kinds go through nucleation's ChunkSource (infinite worlds).
+    if (preset === "earth") {
+      const lat = parseFloat(document.getElementById("nw-osm-lat").value);
+      const lon = parseFloat(document.getElementById("nw-osm-lon").value);
+      if (!isFinite(lat) || !isFinite(lon)) { writeText("[earth] bad lat/lon\n"); return; }
+      await startEarthWorld(lat, lon);
+      setTimeout(() => { nwModal.style.display = "none"; nwStep(null); }, 2000);
+      return;
+    }
     if (preset === "planet" || preset === "cellular" || preset === "custom" || preset === "osm" || preset === "riverfall" || preset === "alps") {
       let payload;
       if (preset === "riverfall" || preset === "alps") {
@@ -1036,4 +1053,171 @@ if (vdSlider) {
     farmWorker.postMessage({ type: "viewdist", n: parseInt(vdSlider.value, 10) });
     writeText(`[cfg] view distance → ${vdSlider.value} (move a chunk to stream more; client setting must allow it)\n`);
   });
+}
+
+// --- earth streamer: page-side region fetcher (docs/earth-streamer.md) ---
+const earth = { origin: null, originElev: 0, inflight: new Set(), lastOverpass: 0 };
+
+async function earthElevAt(lat, lon) {
+  const t = await fetchTerrainGrid(lat, lon, 40, apiBase2());
+  if (!t) return 0;
+  // fetchTerrainGrid normalizes; grab raw center by re-deriving: use midpoint height + its own baseline
+  return t.baseline ?? 0;
+}
+
+async function startEarthWorld(lat, lon) {
+  nwStep("anchoring earth world");
+  earth.origin = { lat, lon };
+  earth.inflight.clear();
+  // Raw elevation at origin becomes the global y-datum (origin ground ≈ y 40).
+  const probe = await fetchTerrainGridRaw(lat, lon, 60, apiBase2());
+  earth.originElev = probe ? probe.center : 0;
+  nwStep(`origin elevation ${earth.originElev.toFixed(0)}m — anchored`, true);
+  farmWorker.postMessage({ type: "worldearth", payload: JSON.stringify({ lat, lon }) });
+}
+
+// Region worker: metrics tells us which 512-block regions the server wants.
+async function earthFetchRegion(rx, rz) {
+  const key = `${rx},${rz}`;
+  if (earth.inflight.has(key) || !earth.origin) return;
+  earth.inflight.add(key);
+  const { lat, lon } = earth.origin;
+  const mLat = 111320, mLon = 111320 * Math.cos(lat * Math.PI / 180);
+  const cxm = rx * 512 + 256, czm = rz * 512 + 256; // region center in blocks(≈m)
+  const cLat = lat - czm / mLat, cLon = lon + cxm / mLon;
+  try {
+    writeText(`[earth] fetching region ${key} (${cLat.toFixed(4)}, ${cLon.toFixed(4)})…\n`);
+    const t = await fetchTerrainGridRaw(cLat, cLon, 384, apiBase2());
+    if (!t) throw new Error("no elevation");
+    const heights = t.heights.map((e) => Math.max(1, Math.round(e - earth.originElev) + 40));
+    // Overpass: gentle — one at a time, 8s spacing.
+    const wait = Math.max(0, earth.lastOverpass + 8000 - Date.now());
+    if (wait) await new Promise((r) => setTimeout(r, wait));
+    earth.lastOverpass = Date.now();
+    let feats = [];
+    try {
+      const res = await fetchOsmFootprintsAt(cLat, cLon, 384, { ox: rx * 512 + 256, oz: rz * 512 + 256, ground: (x, z) => {
+        const gx = Math.min(t.width - 1, Math.max(0, Math.round((x - rx * 512) / t.step)));
+        const gz = Math.min(t.width - 1, Math.max(0, Math.round((z - rz * 512) / t.step)));
+        return Math.max(1, Math.round(t.heights[gz * t.width + gx] - earth.originElev) + 40);
+      }});
+      feats = res;
+    } catch (e) { writeText(`[earth] region ${key}: no OSM this pass (${e.message})\n`); }
+    farmWorker.postMessage({ type: "worldregion", payload: JSON.stringify({
+      rx, rz, heights, width: t.width, step: t.step, waterY: 38, footprints: feats,
+    })});
+    writeText(`[earth] region ${key} delivered (${feats.length} features)\n`);
+  } catch (e) {
+    writeText(`[earth] region ${key} failed: ${e.message} — will retry\n`);
+    setTimeout(() => earth.inflight.delete(key), 20000);
+    return;
+  }
+  earth.inflight.delete(key);
+}
+
+// Raw (meters, un-normalized) terrain grid — shared by earth regions so all
+// regions use one global datum and seam together.
+async function fetchTerrainGridRaw(lat, lon, radius, base) {
+  const t = await fetchTerrainGridMeters(lat, lon, radius, base);
+  return t;
+}
+async function fetchTerrainGridMeters(lat, lon, radius, base) {
+  const Z = 14, n = 2 ** Z;
+  const latRad = lat * Math.PI / 180;
+  const tx = (lon + 180) / 360 * n;
+  const ty = (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n;
+  const metersPerTile = 40075016.7 * Math.cos(latRad) / n;
+  const span = Math.ceil(radius / metersPerTile);
+  const tiles = new Map();
+  const loads = [];
+  for (let dx = -span; dx <= span; dx++) for (let dy = -span; dy <= span; dy++) {
+    const X = Math.floor(tx) + dx, Y = Math.floor(ty) + dy;
+    loads.push((async () => {
+      const img = new Image(); img.crossOrigin = "anonymous";
+      const done = new Promise((res, rej) => {
+        img.onload = res;
+        img.onerror = () => rej(new Error("tile"));
+        setTimeout(() => rej(new Error("tile timeout")), 20000);
+      });
+      img.src = `${base}/api/terrain/elevation-tiles-prod/terrarium/${Z}/${X}/${Y}.png`;
+      await done;
+      const c = document.createElement("canvas"); c.width = c.height = 256;
+      const g = c.getContext("2d"); g.drawImage(img, 0, 0);
+      tiles.set(`${X},${Y}`, g.getImageData(0, 0, 256, 256).data);
+    })().catch(() => {}));
+  }
+  await Promise.all(loads);
+  const elevAt = (la, lo) => {
+    const fx = (lo + 180) / 360 * n;
+    const laR = la * Math.PI / 180;
+    const fy = (1 - Math.log(Math.tan(laR) + 1 / Math.cos(laR)) / Math.PI) / 2 * n;
+    const X = Math.floor(fx), Y = Math.floor(fy);
+    const d = tiles.get(`${X},${Y}`);
+    if (!d) return null;
+    const px = Math.min(255, Math.floor((fx - X) * 256));
+    const py = Math.min(255, Math.floor((fy - Y) * 256));
+    const i = (py * 256 + px) * 4;
+    return d[i] * 256 + d[i + 1] + d[i + 2] / 256 - 32768;
+  };
+  const mLat = 111320, mLon = 111320 * Math.cos(latRad);
+  const step = 2, half = Math.ceil(radius / step), width = half * 2 + 1;
+  const heights = new Array(width * width).fill(0);
+  for (let gz = 0; gz < width; gz++) for (let gx = 0; gx < width; gx++) {
+    const e = elevAt(lat - (gz - half) * step / mLat, lon + (gx - half) * step / mLon);
+    heights[gz * width + gx] = e === null ? 0 : e;
+  }
+  return { heights, width, step, center: elevAt(lat, lon) ?? 0 };
+}
+
+// OSM features for an earth region: polygons in WORLD blocks (origin datum),
+// buildings seated via the caller's ground(x,z).
+async function fetchOsmFootprintsAt(cLat, cLon, radius, opts) {
+  const base = apiBase2();
+  const o = earth.origin;
+  const mLat = 111320, mLon = 111320 * Math.cos(o.lat * Math.PI / 180);
+  const q = `[out:json][timeout:25];(way["building"](around:${radius},${cLat},${cLon});way["highway"](around:${radius},${cLat},${cLon}););out geom;`;
+  let data = null, lastErr = null;
+  for (const route of ["/api/overpass", "/api/overpass-alt"]) {
+    try {
+      const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 40000);
+      const r = await fetch(`${base}${route}/api/interpreter?data=${encodeURIComponent(q)}`, { signal: ctl.signal });
+      clearTimeout(tm);
+      if (!r.ok) { lastErr = new Error(`HTTP ${r.status}`); continue; }
+      data = await r.json(); break;
+    } catch (e) { lastErr = e; }
+  }
+  if (!data) throw lastErr || new Error("overpass failed");
+  const B = { church: "minecraft:stone_bricks", industrial: "minecraft:gray_concrete",
+    retail: "minecraft:white_concrete", apartments: "minecraft:bricks", house: "minecraft:oak_planks" };
+  const proj = (pt) => [(pt.lon - o.lon) * mLon, -((pt.lat - o.lat) * mLat)];
+  const out = [];
+  for (const el of data.elements || []) {
+    if (el.type !== "way" || !el.geometry) continue;
+    const tags = el.tags || {};
+    if (tags.building && el.geometry.length >= 4) {
+      const polygon = el.geometry.map(proj);
+      let cx = 0, cz = 0;
+      for (const [px, pz] of polygon) { cx += px; cz += pz; }
+      cx /= polygon.length; cz /= polygon.length;
+      const ground = opts.ground(cx, cz);
+      let h = parseFloat(tags.height) || (parseInt(tags["building:levels"], 10) || 0) * 3 || 8;
+      out.push({ polygon, height: ground + Math.min(Math.round(h), 250), min_y: ground,
+                 block: B[tags.building] || "minecraft:bricks" });
+    } else if (tags.highway && el.geometry.length >= 2) {
+      const style = ROAD_STYLE[tags.highway];
+      if (!style) continue;
+      const [w, block] = style;
+      const pts = el.geometry.map(proj);
+      for (let i = 0; i + 1 < pts.length; i++) {
+        const [x1, z1] = pts[i], [x2, z2] = pts[i + 1];
+        const dx = x2 - x1, dz = z2 - z1, len = Math.hypot(dx, dz);
+        if (len < 0.5) continue;
+        const nx = (-dz / len) * (w / 2), nz = (dx / len) * (w / 2);
+        const y = opts.ground((x1 + x2) / 2, (z1 + z2) / 2);
+        out.push({ polygon: [[x1 + nx, z1 + nz], [x2 + nx, z2 + nz], [x2 - nx, z2 - nz], [x1 - nx, z1 - nz]],
+                   height: y, min_y: y, block });
+      }
+    }
+  }
+  return out;
 }

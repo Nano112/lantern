@@ -640,7 +640,15 @@ async function liveWorldSwap(zipBytes) {
 }
 
 self.onmessage = (e) => {
-  if (e.data.type === "viewdist") {
+  if (e.data.type === "worldearth") {
+    const c = new TextEncoder().encode("earth:"), b = new TextEncoder().encode(e.data.payload);
+    const f = new Uint8Array(c.length + b.length); f.set(c); f.set(b, c.length);
+    worldSwapFd.push(f);
+  } else if (e.data.type === "worldregion") {
+    const c = new TextEncoder().encode("region:"), b = new TextEncoder().encode(e.data.payload);
+    const f = new Uint8Array(c.length + b.length); f.set(c); f.set(b, c.length);
+    worldSwapFd.push(f);
+  } else if (e.data.type === "viewdist") {
     worldSwapFd.push(new TextEncoder().encode(`viewdist ${e.data.n}`));
   } else if (e.data.type === "worldchunksrc") {
     const cmd = new TextEncoder().encode("chunksrc:");

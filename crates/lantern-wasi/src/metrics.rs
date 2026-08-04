@@ -38,6 +38,8 @@ pub fn spawn(server: Arc<Server>) {
                 })
                 .collect();
             let player_list = serde_json::to_string(&player_list).unwrap_or_else(|_| "[]".into());
+            let earth_needed = serde_json::to_string(&crate::worldswap::earth_needed())
+                .unwrap_or_else(|_| "[]".into());
             let activity =
                 serde_json::to_string(&*ACTIVITY.lock().unwrap()).unwrap_or_else(|_| "\"\"".into());
             let mut chunks = 0usize;
@@ -56,7 +58,7 @@ pub fn spawn(server: Arc<Server>) {
             let net_outq = crate::net_bridge::OUT_QUEUE.load(std::sync::atomic::Ordering::Relaxed);
 
             let line = format!(
-                "{{\"mspt\":{mspt:.2},\"players\":{players},\"chunks\":{chunks},\"mem_mb\":{mem_mb:.1},\"uptime_s\":{},\"tasks\":{tasks},\"blocking\":{blocking},\"idle_blocking\":{idle_blocking},\"net_streams\":{net_streams},\"net_outq\":{net_outq},\"player_list\":{player_list},\"activity\":{activity}}}\n",
+                "{{\"mspt\":{mspt:.2},\"players\":{players},\"chunks\":{chunks},\"mem_mb\":{mem_mb:.1},\"uptime_s\":{},\"tasks\":{tasks},\"blocking\":{blocking},\"idle_blocking\":{idle_blocking},\"net_streams\":{net_streams},\"net_outq\":{net_outq},\"player_list\":{player_list},\"activity\":{activity},\"earth_needed\":{earth_needed}}}\n",
                 start.elapsed().as_secs()
             );
             crate::net_bridge::fd_write_all(fd, line.as_bytes());
