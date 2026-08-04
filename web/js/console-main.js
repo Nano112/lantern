@@ -149,6 +149,8 @@ farmWorker.onmessage = (e) => {
     const addrEl = document.getElementById("mc-addr");
     const roomEl = document.getElementById("mc-room");
     addrEl.value = bare;
+    const infoRoom = document.getElementById("info-room");
+    if (infoRoom) infoRoom.textContent = m.room;
     roomEl.textContent = m.room === "default"
       ? ""
       : `⚠ room "${m.room}" — another server owns this address`;
@@ -434,6 +436,9 @@ if (motdInput) {
 }
 const genSelect = document.getElementById("cfg-gen");
 if (genSelect) genSelect.value = (gen || "normal");
+const infoGen = document.getElementById("info-gen");
+if (infoGen) infoGen.textContent = gen || "normal";
+genSelect?.addEventListener("change", () => { if (infoGen) infoGen.textContent = genSelect.value; });
 document.getElementById("cfg-newworld")?.addEventListener("click", () => {
   if (!confirm("Generate a brand-new world with the selected generator? (players stay connected)")) return;
   const g = genSelect?.value || "normal";
@@ -496,12 +501,12 @@ function renderPlayers(list) {
   count.textContent = list.length ? `(${list.length})` : "";
   box.innerHTML = "";
   if (!list.length) {
-    box.innerHTML = '<span style="color:#5d5646;">nobody online — right-click a player here for actions</span>';
+    box.innerHTML = '<span class="hint">nobody online — click a player for actions</span>';
     return;
   }
   for (const p of list) {
     const row = document.createElement("div");
-    row.style.cssText = "display:flex; gap:8px; align-items:center; padding:3px 6px; border-radius:4px; cursor:context-menu;";
+    row.className = "player-row";
     row.innerHTML = `<span style="color:#7fb069;">●</span><span>${p.name}</span><span style="color:#9a8f7a; font-size:11px; margin-left:auto;">${(p.gamemode || "").toLowerCase()}</span>`;
     row.addEventListener("contextmenu", (ev) => showPlayerMenu(ev, p.name));
     row.addEventListener("click", (ev) => showPlayerMenu(ev, p.name));

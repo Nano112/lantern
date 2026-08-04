@@ -13,8 +13,32 @@
   #connect { margin-left: auto; color: #7fb069; }
   main { flex: 1; display: flex; min-height: 0; }
   #log { flex: 1; overflow-y: auto; padding: 10px 16px; white-space: pre-wrap; word-break: break-all; }
-  #metrics { width: 304px; flex-shrink: 0; border-left: 1px solid #2c2620; overflow-y: auto;
-             padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+  #metrics { width: 320px; flex-shrink: 0; border-left: 1px solid #2c2620; overflow-y: auto;
+             padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .card h2 { margin: 0 0 8px; color: #9a8f7a; font-size: 11px; font-weight: 600;
+             text-transform: uppercase; letter-spacing: .08em; display: flex;
+             justify-content: space-between; align-items: baseline; }
+  .row { display: flex; gap: 6px; align-items: center; }
+  .row + .row { margin-top: 6px; }
+  .field, .select { background: #241f18; color: #e8dcc8; border: 1px solid #3a332a;
+                    border-radius: 5px; padding: 6px 8px; font: inherit; font-size: 12px;
+                    min-width: 0; }
+  .field:focus, .select:focus { outline: none; border-color: #6b5a35; }
+  .field { flex: 1; }
+  .btn { border: 0; border-radius: 5px; padding: 6px 12px; font: inherit; font-size: 12px;
+         cursor: pointer; white-space: nowrap; transition: filter .1s; }
+  .btn:hover { filter: brightness(1.12); }
+  .btn-amber { background: #f0a030; color: #16130f; }
+  .btn-green { background: #7fb069; color: #16130f; }
+  .btn-warn  { background: #e0a458; color: #16130f; font-weight: 600; }
+  .btn-ghost { background: #241f18; color: #e8dcc8; border: 1px solid #3a332a; }
+  .hint { color: #7a7060; font-size: 11px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 12px; }
+  .kv .k2 { color: #9a8f7a; }
+  .kv .v2 { color: #e8dcc8; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .player-row { display: flex; gap: 8px; align-items: center; padding: 4px 8px;
+                border-radius: 5px; cursor: context-menu; }
+  .player-row:hover { background: #26201a; }
   .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .tile { background: #1d1913; border: 1px solid #2c2620; border-radius: 6px; padding: 8px 10px; }
   .tile .k { color: #9a8f7a; font-size: 11px; }
@@ -59,37 +83,45 @@
       <div class="tile"><div class="k">out queue</div><div class="v" id="m-outq">–</div></div>
     </div>
     <div class="card">
-      <div class="k"><span>schematic</span></div>
-      <div style="display:flex; gap:6px; margin-top:6px;">
-        <input id="schem-url" placeholder="schemat.io link or .schem URL" style="flex:1; background:#241f18; color:inherit; border:1px solid #3a332a; border-radius:4px; padding:5px 8px; font:inherit; font-size:12px;">
-        <button id="schem-load" style="background:#f0a030; color:#16130f; border:0; border-radius:4px; padding:5px 10px; font:inherit; font-size:12px; cursor:pointer;">load</button>
+      <h2>schematic <span class="hint">drop a file anywhere</span></h2>
+      <div class="row">
+        <input id="schem-url" class="field" placeholder="schemat.io link or .schem URL">
+        <button id="schem-load" class="btn btn-amber">load</button>
       </div>
-      <div style="display:flex; gap:6px; margin-top:6px; align-items:center;">
-        <span style="color:#9a8f7a; font-size:11px;">logic engine:</span>
-        <button id="sim-on" style="background:#7fb069; color:#16130f; border:0; border-radius:4px; padding:4px 10px; font:inherit; font-size:12px; cursor:pointer;">mc-tick</button>
-        <button id="sim-off" style="background:#241f18; color:#e8dcc8; border:1px solid #3a332a; border-radius:4px; padding:4px 10px; font:inherit; font-size:12px; cursor:pointer;">pumpkin</button>
+      <div class="row">
+        <span class="hint">logic engine</span>
+        <button id="sim-on" class="btn btn-green">mc-tick</button>
+        <button id="sim-off" class="btn btn-ghost">pumpkin</button>
       </div>
     </div>
 
-    <div style="background:#1d1912; border:1px solid #2c2620; border-radius:6px; padding:10px 12px;">
-      <div style="color:#9a8f7a; font-size:11px; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px;">server</div>
-      <div style="display:flex; gap:6px; margin-bottom:6px;">
-        <input id="cfg-motd" placeholder="MOTD (applies on world reboot)" style="flex:1; background:#241f18; color:#e8dcc8; border:1px solid #3a332a; border-radius:4px; padding:5px 8px; font:inherit; font-size:12px;">
+    <div class="card">
+      <h2>server</h2>
+      <div class="kv" style="margin-bottom:8px;">
+        <span class="k2">room</span><span class="v2" id="info-room">–</span>
+        <span class="k2">generator</span><span class="v2" id="info-gen">–</span>
+        <span class="k2">version</span><span class="v2">Java 26.2 · protocol 774</span>
+        <span class="k2">view distance</span><span class="v2">6 chunks</span>
       </div>
-      <div style="display:flex; gap:6px; align-items:center;">
-        <select id="cfg-gen" style="background:#241f18; color:#e8dcc8; border:1px solid #3a332a; border-radius:4px; padding:5px 8px; font:inherit; font-size:12px;">
+      <div class="row">
+        <input id="cfg-motd" class="field" placeholder="MOTD (applies on next reboot)">
+      </div>
+      <div class="row">
+        <select id="cfg-gen" class="select" style="flex:1;">
           <option value="normal">normal terrain</option>
           <option value="void">void + bedrock floor</option>
           <option value="flat">superflat</option>
         </select>
-        <button id="cfg-newworld" style="background:#e0a458; color:#16130f; border:0; border-radius:4px; padding:5px 10px; font:inherit; font-size:12px; cursor:pointer;">new world ⟳</button>
-        <span style="color:#9a8f7a; font-size:11px;">wipes save, reboots server</span>
       </div>
+      <div class="row">
+        <button id="cfg-newworld" class="btn btn-warn" style="flex:1;">⟳ new world — live, no restart</button>
+      </div>
+      <div class="row"><span class="hint">swaps generator + seed in place; wipes the saved world</span></div>
     </div>
 
-    <div style="background:#1d1912; border:1px solid #2c2620; border-radius:6px; padding:10px 12px;">
-      <div style="color:#9a8f7a; font-size:11px; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px;">players <span id="pl-count"></span></div>
-      <div id="player-list" style="display:flex; flex-direction:column; gap:4px; font-size:13px;"><span style="color:#5d5646;">nobody online — right-click a player here for actions</span></div>
+    <div class="card">
+      <h2>players <span id="pl-count" class="hint"></span></h2>
+      <div id="player-list" style="display:flex; flex-direction:column; gap:2px; font-size:13px;"><span class="hint">nobody online — click a player for actions</span></div>
     </div>
 
     <div id="pl-menu" style="position:fixed; z-index:120; display:none; background:#241f18; border:1px solid #3a332a; border-radius:6px; padding:4px; min-width:150px; box-shadow:0 6px 20px rgba(0,0,0,.5); font-size:13px;"></div>
