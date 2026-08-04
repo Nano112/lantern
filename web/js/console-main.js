@@ -782,3 +782,168 @@ function renderPlayers(list) {
     box.append(row);
   }
 }
+
+// --- slippy-map location picker (hand-rolled: CDN map libs are blocked by
+// cross-origin isolation; tiles come through the proxy) ---
+const mapModal = document.getElementById("map-modal");
+const mapCv = document.getElementById("map-canvas");
+const mapCtx = mapCv?.getContext("2d");
+const tileCache = new Map();
+const mapState = { lat: 48.8584, lon: 2.2945, zoom: 13, pick: null };
+const apiBase2 = () => location.hostname === "localhost"
+  ? "http://localhost:9091"
+  : (!location.port || location.port === "443") ? "" : `https://${location.hostname}:9443`;
+
+function lonToX(lon, z) { return (lon + 180) / 360 * 2 ** z; }
+function latToY(lat, z) {
+  const r = lat * Math.PI / 180;
+  return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * 2 ** z;
+}
+function xToLon(x, z) { return x / 2 ** z * 360 - 180; }
+function yToLat(y, z) {
+  const n = Math.PI - 2 * Math.PI * y / 2 ** z;
+  return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+}
+
+function tileImg(z, x, y) {
+  const key = `${z}/${x}/${y}`;
+  if (tileCache.has(key)) return tileCache.get(key);
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.onload = drawMap;
+  img.src = `${apiBase2()}/api/osmtile/${z}/${x}/${y}.png`;
+  tileCache.set(key, img);
+  if (tileCache.size > 300) tileCache.delete(tileCache.keys().next().value);
+  return img;
+}
+
+function drawMap() {
+  if (!mapCtx || mapModal.style.display === "none") return;
+  const { lat, lon, zoom } = mapState;
+  const W = mapCv.width, H = mapCv.height;
+  const cx = lonToX(lon, zoom) * 256, cy = latToY(lat, zoom) * 256;
+  mapCtx.fillStyle = "#241f18";
+  mapCtx.fillRect(0, 0, W, H);
+  const x0 = Math.floor((cx - W / 2) / 256), x1 = Math.floor((cx + W / 2) / 256);
+  const y0 = Math.floor((cy - H / 2) / 256), y1 = Math.floor((cy + H / 2) / 256);
+  for (let tx = x0; tx <= x1; tx++) {
+    for (let ty = y0; ty <= y1; ty++) {
+      if (ty < 0 || ty >= 2 ** zoom) continue;
+      const img = tileImg(zoom, ((tx % 2 ** zoom) + 2 ** zoom) % 2 ** zoom, ty);
+      if (img.complete && img.naturalWidth) {
+        mapCtx.drawImage(img, Math.round(tx * 256 - cx + W / 2), Math.round(ty * 256 - cy + H / 2));
+      }
+    }
+  }
+  if (mapState.pick) {
+    const px = lonToX(mapState.pick.lon, zoom) * 256 - cx + W / 2;
+    const py = latToY(mapState.pick.lat, zoom) * 256 - cy + H / 2;
+    const radius = parseInt(document.getElementById("nw-osm-radius").value, 10) || 250;
+    const mPerPx = 156543.03 * Math.cos(mapState.pick.lat * Math.PI / 180) / 2 ** zoom;
+    mapCtx.strokeStyle = "#f0a030"; mapCtx.fillStyle = "rgba(240,160,48,.15)";
+    mapCtx.lineWidth = 2;
+    mapCtx.beginPath();
+    mapCtx.arc(px, py, radius / mPerPx, 0, Math.PI * 2);
+    mapCtx.fill(); mapCtx.stroke();
+    mapCtx.beginPath();
+    mapCtx.arc(px, py, 4, 0, Math.PI * 2);
+    mapCtx.fillStyle = "#f0a030"; mapCtx.fill();
+  }
+}
+
+let dragging = null;
+mapCv?.addEventListener("mousedown", (e) => {
+  dragging = { x: e.offsetX, y: e.offsetY, moved: false };
+});
+mapCv?.addEventListener("mousemove", (e) => {
+  if (!dragging) return;
+  const dx = e.offsetX - dragging.x, dy = e.offsetY - dragging.y;
+  if (Math.abs(dx) + Math.abs(dy) > 3) dragging.moved = true;
+  mapState.lon = xToLon(lonToX(mapState.lon, mapState.zoom) - dx / 256, mapState.zoom);
+  mapState.lat = yToLat(latToY(mapState.lat, mapState.zoom) - dy / 256, mapState.zoom);
+  dragging.x = e.offsetX; dragging.y = e.offsetY;
+  drawMap();
+});
+window.addEventListener("mouseup", (e) => {
+  if (dragging && !dragging.moved && e.target === mapCv) {
+    const W = mapCv.width, H = mapCv.height, z = mapState.zoom;
+    const cx = lonToX(mapState.lon, z) * 256, cy = latToY(mapState.lat, z) * 256;
+    const lon = xToLon((cx - W / 2 + e.offsetX) / 256, z);
+    const lat = yToLat((cy - H / 2 + e.offsetY) / 256, z);
+    mapState.pick = { lat, lon };
+    document.getElementById("map-readout").textContent =
+      `${lat.toFixed(5)}, ${lon.toFixed(5)} — preview terrain or use location`;
+    drawMap();
+  }
+  dragging = null;
+});
+mapCv?.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  mapState.zoom = Math.max(3, Math.min(17, mapState.zoom + (e.deltaY < 0 ? 1 : -1)));
+  drawMap();
+}, { passive: false });
+document.getElementById("map-zin")?.addEventListener("click", () => { mapState.zoom = Math.min(17, mapState.zoom + 1); drawMap(); });
+document.getElementById("map-zout")?.addEventListener("click", () => { mapState.zoom = Math.max(3, mapState.zoom - 1); drawMap(); });
+document.getElementById("nw-osm-map")?.addEventListener("click", () => {
+  mapState.lat = parseFloat(document.getElementById("nw-osm-lat").value) || 48.8584;
+  mapState.lon = parseFloat(document.getElementById("nw-osm-lon").value) || 2.2945;
+  mapState.pick = { lat: mapState.lat, lon: mapState.lon };
+  mapModal.style.display = "flex";
+  drawMap();
+});
+document.getElementById("map-cancel")?.addEventListener("click", () => mapModal.style.display = "none");
+document.getElementById("map-use")?.addEventListener("click", () => {
+  if (mapState.pick) {
+    document.getElementById("nw-osm-lat").value = mapState.pick.lat.toFixed(5);
+    document.getElementById("nw-osm-lon").value = mapState.pick.lon.toFixed(5);
+  }
+  mapModal.style.display = "none";
+});
+document.getElementById("map-preview")?.addEventListener("click", async () => {
+  if (!mapState.pick) { document.getElementById("map-readout").textContent = "click the map first"; return; }
+  const radius = Math.min(parseInt(document.getElementById("nw-osm-radius").value, 10) || 250, 1500);
+  const relief = document.getElementById("map-relief");
+  const g = relief.getContext("2d");
+  relief.style.display = "block";
+  g.fillStyle = "#241f18"; g.fillRect(0, 0, relief.width, relief.height);
+  g.fillStyle = "#9a8f7a"; g.fillText("fetching elevation…", 10, 20);
+  try {
+    const t = await fetchTerrainGrid(mapState.pick.lat, mapState.pick.lon, radius, apiBase2());
+    if (!t) throw new Error("no elevation data");
+    const { heights, width } = t;
+    const depth = heights.length / width;
+    let lo = Infinity, hi = -Infinity;
+    for (const h of heights) { lo = Math.min(lo, h); hi = Math.max(hi, h); }
+    const span = Math.max(1, hi - lo);
+    const img = g.createImageData(width, depth);
+    for (let z = 0; z < depth; z++) {
+      for (let x = 0; x < width; x++) {
+        const h = heights[z * width + x];
+        const hr = heights[z * width + Math.min(width - 1, x + 1)];
+        const shade = Math.max(-24, Math.min(24, (h - hr) * 4));
+        const v = (h - lo) / span;
+        const i = (z * width + x) * 4;
+        img.data[i] = 60 + v * 150 + shade;
+        img.data[i + 1] = 90 + v * 120 + shade;
+        img.data[i + 2] = 55 + v * 90 + shade;
+        img.data[i + 3] = 255;
+      }
+    }
+    const off = new OffscreenCanvas(width, depth);
+    off.getContext("2d").putImageData(img, 0, 0);
+    g.imageSmoothingEnabled = true;
+    g.fillStyle = "#241f18"; g.fillRect(0, 0, relief.width, relief.height);
+    const s = Math.min(relief.width / width, relief.height / depth);
+    g.drawImage(off, (relief.width - width * s) / 2, 0, width * s, depth * s);
+    g.fillStyle = "#e8dcc8";
+    g.fillText(`relief ${(hi - lo)}m over ${radius * 2}m — this becomes your terrain (1 block = 1 m)`, 10, relief.height - 8);
+  } catch (e) {
+    g.fillStyle = "#e0a458"; g.fillText(`terrain preview failed: ${e.message}`, 10, 40);
+  }
+});
+
+document.getElementById("schem-riverfall")?.addEventListener("click", async () => {
+  writeText("[schem] loading the riverfall cabin scene (468k blocks)…\n");
+  const bytes = await fetchSchematicBytes("riverfall-cabin.litematic");
+  if (bytes) farmWorker.postMessage({ type: "schem", bytes: bytes.buffer }, [bytes.buffer]);
+});

@@ -184,6 +184,8 @@ func main() {
 	apiMux.Handle("/api/schematio/", corsWrap(mojangLimiter.HTTPMiddleware(hostProxy("https://schemat.io", "/api/schematio"))))
 	// lantern: OSM building footprints for streamed real-world worlds.
 	apiMux.Handle("/api/overpass/", corsWrap(mojangLimiter.HTTPMiddleware(hostProxy("https://overpass-api.de", "/api/overpass"))))
+	// lantern: OSM raster tiles for the location-picker map.
+	apiMux.Handle("/api/osmtile/", corsWrap(mojangLimiter.HTTPMiddleware(hostProxy("https://tile.openstreetmap.org", "/api/osmtile"))))
 	// lantern: AWS terrarium elevation tiles for OSM terrain.
 	apiMux.Handle("/api/terrain/", corsWrap(mojangLimiter.HTTPMiddleware(hostProxy("https://s3.amazonaws.com", "/api/terrain"))))
 	apiMux.Handle("/api/overpass-alt/", corsWrap(mojangLimiter.HTTPMiddleware(hostProxy("https://overpass.kumi.systems", "/api/overpass-alt"))))

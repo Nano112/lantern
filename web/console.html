@@ -89,6 +89,9 @@
         <button id="schem-load" class="btn btn-amber">load</button>
       </div>
       <div class="row">
+        <button id="schem-riverfall" class="btn btn-ghost" style="flex:1;" title="SDF-built river, waterfall, cabin and forest — 468k blocks">🏞 riverfall cabin scene</button>
+      </div>
+      <div class="row">
         <span class="hint">logic engine</span>
         <button id="sim-on" class="btn btn-green">mc-tick</button>
         <button id="sim-off" class="btn btn-ghost">pumpkin</button>
@@ -188,6 +191,7 @@
         <input id="nw-osm-lat" class="field" placeholder="lat" value="48.8584">
         <input id="nw-osm-lon" class="field" placeholder="lon" value="2.2945">
         <input id="nw-osm-radius" class="field" placeholder="radius m" value="250" style="max-width:80px;">
+        <button id="nw-osm-map" class="btn btn-ghost" title="pick on a map">🗺</button>
       </div>
       <textarea id="nw-sdf-json" class="field" rows="5" style="display:none; resize:vertical; font-size:11px;" placeholder='{"type":"sphere","radius":40}'></textarea>
       <div class="row">
@@ -201,6 +205,26 @@
       <button id="nw-create" class="btn btn-warn" style="flex:1;">create world</button>
       <button id="nw-cancel" class="btn btn-ghost">cancel</button>
     </div>
+  </div>
+</div>
+
+<div id="map-modal" style="position:fixed; inset:0; z-index:130; display:none; align-items:center; justify-content:center; background:rgba(10,8,6,.8);">
+  <div class="card" style="width:600px; max-width:95vw; display:flex; flex-direction:column; gap:10px; padding:16px;">
+    <h2 style="margin:0;">pick a location <span class="hint">drag to pan · scroll or ± to zoom · click to place</span></h2>
+    <div style="position:relative;">
+      <canvas id="map-canvas" width="568" height="340" style="width:100%; border-radius:6px; cursor:crosshair; background:#241f18;"></canvas>
+      <div style="position:absolute; right:8px; top:8px; display:flex; flex-direction:column; gap:4px;">
+        <button id="map-zin" class="btn btn-ghost" style="padding:2px 9px;">+</button>
+        <button id="map-zout" class="btn btn-ghost" style="padding:2px 9px;">−</button>
+      </div>
+    </div>
+    <div class="row">
+      <span id="map-readout" class="hint" style="flex:1;">no point selected</span>
+      <button id="map-preview" class="btn btn-ghost">⛰ preview terrain</button>
+      <button id="map-use" class="btn btn-warn">use location</button>
+      <button id="map-cancel" class="btn btn-ghost">cancel</button>
+    </div>
+    <canvas id="map-relief" width="568" height="140" style="width:100%; border-radius:6px; display:none; background:#241f18;"></canvas>
   </div>
 </div>
 </body>
