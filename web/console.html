@@ -167,10 +167,26 @@
         <option value="normal">normal terrain</option>
         <option value="void">void + bedrock floor</option>
         <option value="flat">superflat</option>
+        <option value="sdf">SDF field (nucleation)</option>
       </select>
     </div>
     <div class="row">
       <input id="nw-seed" class="field" placeholder="seed (blank = random)" inputmode="numeric">
+    </div>
+    <div id="nw-sdf" style="display:none; flex-direction:column; gap:8px;">
+      <div class="row">
+        <select id="nw-sdf-preset" class="select" style="flex:1;">
+          <option value="planet">planet — 80-block sphere below spawn</option>
+          <option value="moons">three moons — union of spheres</option>
+          <option value="slab">slab — elongated sphere plate</option>
+          <option value="custom">custom JSON…</option>
+        </select>
+      </div>
+      <textarea id="nw-sdf-json" class="field" rows="5" style="display:none; resize:vertical; font-size:11px;" placeholder='{"type":"sphere","radius":40}'></textarea>
+      <div class="row">
+        <input id="nw-sdf-block" class="field" value="minecraft:stone" placeholder="block">
+        <input id="nw-sdf-scale" class="field" value="1.0" style="max-width:70px;" placeholder="scale">
+      </div>
     </div>
     <label class="row hint" style="cursor:pointer;"><input id="nw-wipeopfs" type="checkbox"> also delete the OPFS save (full clean slate)</label>
     <div class="hint">Live: the generator and seed swap in place — connected players stay online and terrain regenerates around them.</div>

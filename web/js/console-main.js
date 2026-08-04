@@ -451,6 +451,26 @@ async function wipeOpfsSave() {
     await root.removeEntry(f).catch(() => {});
   }
 }
+const SDF_PRESETS = {
+  planet: { y: -20, program: { type: "sphere", radius: 80 } },
+  moons: { y: 20, program: { type: "union",
+    a: { type: "sphere", radius: 24 },
+    b: { type: "union",
+      a: { type: "translate", offset: [60, 10, 0], child: { type: "sphere", radius: 16 } },
+      b: { type: "translate", offset: [-40, -5, 50], child: { type: "sphere", radius: 20 } } } } },
+  slab: { y: -30, program: { type: "elongate", halfLengths: [120, 0, 120], child: { type: "sphere", radius: 8 } } },
+};
+const nwGenSel = document.getElementById("nw-gen");
+const nwSdfBox = document.getElementById("nw-sdf");
+const nwSdfPreset = document.getElementById("nw-sdf-preset");
+const nwSdfJson = document.getElementById("nw-sdf-json");
+nwGenSel?.addEventListener("change", () => {
+  nwSdfBox.style.display = nwGenSel.value === "sdf" ? "flex" : "none";
+});
+nwSdfPreset?.addEventListener("change", () => {
+  nwSdfJson.style.display = nwSdfPreset.value === "custom" ? "block" : "none";
+});
+
 document.getElementById("nw-create")?.addEventListener("click", async () => {
   const g = document.getElementById("nw-gen").value;
   const seed = document.getElementById("nw-seed").value.trim();
@@ -458,6 +478,24 @@ document.getElementById("nw-create")?.addEventListener("click", async () => {
   nwModal.style.display = "none";
   if (genSelect) genSelect.value = g;
   if (wipe) { await wipeOpfsSave(); writeText("[world] OPFS save deleted\n"); }
+  if (g === "sdf") {
+    let entry;
+    if (nwSdfPreset.value === "custom") {
+      try { entry = { y: 0, program: JSON.parse(nwSdfJson.value) }; }
+      catch (e) { writeText(`[world] bad SDF JSON: ${e.message}\n`); return; }
+    } else {
+      entry = SDF_PRESETS[nwSdfPreset.value];
+    }
+    const payload = {
+      block: document.getElementById("nw-sdf-block").value || "minecraft:stone",
+      scale: parseFloat(document.getElementById("nw-sdf-scale").value) || 1.0,
+      y: entry.y,
+      program: entry.program,
+    };
+    writeText(`[world] generating SDF world (${nwSdfPreset.value}) — no restart\n`);
+    farmWorker.postMessage({ type: "worldsdf", payload: JSON.stringify(payload) });
+    return;
+  }
   if (serverRunning) {
     writeText(`[world] resetting to a fresh "${g}" world${seed ? ` (seed ${seed})` : ""} — no restart\n`);
     farmWorker.postMessage({ type: "worldreset", gen: g, seed });

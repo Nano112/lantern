@@ -640,7 +640,13 @@ async function liveWorldSwap(zipBytes) {
 }
 
 self.onmessage = (e) => {
-  if (e.data.type === "worldreset") {
+  if (e.data.type === "worldsdf") {
+    const cmd = new TextEncoder().encode("sdf:");
+    const body = new TextEncoder().encode(e.data.payload);
+    const framed = new Uint8Array(cmd.length + body.length);
+    framed.set(cmd); framed.set(body, cmd.length);
+    worldSwapFd.push(framed);
+  } else if (e.data.type === "worldreset") {
     const seed = /^\d+$/.test(e.data.seed || "") ? ` ${e.data.seed}` : "";
     worldSwapFd.push(new TextEncoder().encode(`reset ${e.data.gen || "normal"}${seed}`));
   } else if (e.data.type === "worldswap") {

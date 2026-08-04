@@ -161,6 +161,63 @@ async fn reset(server: &Arc<Server>, mode: &str, seed_override: Option<u64>) {
     swap(server).await;
 }
 
+/// SDF world: payload is JSON {"block":"minecraft:stone","scale":1.0,
+/// "y":0,"program":{...sdf node json...}} — nucleation validates the program
+/// (sandboxed, provably terminating), and blocks exist wherever the field is
+/// <= 0. Rides the same live-swap flow as every other reset.
+async fn reset_sdf(server: &Arc<Server>, payload: &[u8]) {
+    let world = server.worlds.load()[0].clone();
+    let level = world.level.clone();
+
+    let wrapper: serde_json::Value = match serde_json::from_slice(payload) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("worldswap: sdf payload is not JSON: {e}");
+            return;
+        }
+    };
+    let program_json = wrapper["program"].to_string();
+    let program = match nucleation::sdf::SdfNode::from_json(&program_json) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("worldswap: sdf program rejected: {e}");
+            return;
+        }
+    };
+    let block_name = wrapper["block"].as_str().unwrap_or("minecraft:stone");
+    let scale = wrapper["scale"].as_f64().unwrap_or(1.0) as f32;
+    let y_off = wrapper["y"].as_i64().unwrap_or(0) as f32;
+    let state = pumpkin_data::Block::from_name(
+        block_name.strip_prefix("minecraft:").unwrap_or(block_name),
+    )
+    .map_or(pumpkin_data::Block::STONE.default_state, |b| b.default_state);
+
+    let density = std::sync::Arc::new(move |x: i32, y: i32, z: i32| {
+        let d = program.eval(x as f32 * scale, (y as f32 - y_off) * scale, z as f32 * scale);
+        (d <= 0.0).then_some(state)
+    });
+    level.lantern_swap_generator_density(
+        pumpkin_util::world_seed::Seed(0),
+        density,
+        "minecraft:plains".to_string(),
+    );
+    let _ = std::fs::remove_dir_all("world");
+    let _ = std::fs::remove_file("schem_prev.bin");
+    level
+        .lantern_drop_all_chunks
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    level.chunk_loading.lock().unwrap().send_change();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    level
+        .lantern_drop_all_chunks
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    level.chunk_loading.lock().unwrap().send_change();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    tracing::info!("worldswap: SDF world active ({block_name}, scale {scale}) — regenerating…");
+    crate::metrics::set_activity("generating SDF world…");
+    swap(server).await;
+}
+
 /// Old-version world zip: run it through nucleation's DataConverter
 /// (PaperMC port — block states, block entities, items, entities), re-emit
 /// current-version world files into ./world, then hot-swap. Bounded to a
@@ -227,7 +284,9 @@ pub fn spawn_control(server: Arc<Server>) {
                     break;
                 }
                 let frame: Vec<u8> = acc.drain(..4 + flen).skip(4).collect();
-                if frame.starts_with(b"convert:") {
+                if frame.starts_with(b"sdf:") {
+                    reset_sdf(&server, &frame["sdf:".len()..]).await;
+                } else if frame.starts_with(b"convert:") {
                     convert_and_swap(&server, &frame["convert:".len()..]).await;
                 } else {
                     let cmd = String::from_utf8_lossy(&frame).trim().to_string();
