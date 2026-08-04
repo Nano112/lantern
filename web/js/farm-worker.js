@@ -640,7 +640,9 @@ async function liveWorldSwap(zipBytes) {
 }
 
 self.onmessage = (e) => {
-  if (e.data.type === "worldchunksrc") {
+  if (e.data.type === "viewdist") {
+    worldSwapFd.push(new TextEncoder().encode(`viewdist ${e.data.n}`));
+  } else if (e.data.type === "worldchunksrc") {
     const cmd = new TextEncoder().encode("chunksrc:");
     const body = new TextEncoder().encode(e.data.payload);
     const framed = new Uint8Array(cmd.length + body.length);

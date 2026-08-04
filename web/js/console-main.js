@@ -451,8 +451,16 @@ function nwStep(text, done) {
   nwStatus.appendChild(el);
 }
 document.getElementById("cfg-newworld")?.addEventListener("click", () => {
-  document.getElementById("nw-gen").value = genSelect?.value || "normal";
+  // Restore the user's last choice and SYNC the sdf panel visibility —
+  // silently resetting to "normal" while the SDF panel stayed visible sent
+  // normal-world resets for configured OSM/streamed worlds.
+  const last = localStorage.getItem("lantern-worldtype");
+  if (last) document.getElementById("nw-gen").value = last;
+  document.getElementById("nw-gen").dispatchEvent(new Event("change"));
   nwModal.style.display = "flex";
+});
+document.getElementById("nw-gen")?.addEventListener("change", () => {
+  localStorage.setItem("lantern-worldtype", document.getElementById("nw-gen").value);
 });
 document.getElementById("nw-cancel")?.addEventListener("click", () => nwModal.style.display = "none");
 async function wipeOpfsSave() {
@@ -1015,3 +1023,17 @@ document.getElementById("schem-riverfall")?.addEventListener("click", async () =
   const bytes = await fetchSchematicBytes("riverfall-cabin.litematic");
   if (bytes) farmWorker.postMessage({ type: "schem", bytes: bytes.buffer }, [bytes.buffer]);
 });
+
+// --- live view distance ---
+const vdSlider = document.getElementById("cfg-viewdist");
+const vdLabel = document.getElementById("cfg-viewdist-label");
+if (vdSlider) {
+  const saved = localStorage.getItem("lantern-viewdist");
+  if (saved) { vdSlider.value = saved; vdLabel.textContent = saved; }
+  vdSlider.addEventListener("input", () => { vdLabel.textContent = vdSlider.value; });
+  vdSlider.addEventListener("change", () => {
+    localStorage.setItem("lantern-viewdist", vdSlider.value);
+    farmWorker.postMessage({ type: "viewdist", n: parseInt(vdSlider.value, 10) });
+    writeText(`[cfg] view distance → ${vdSlider.value} (move a chunk to stream more; client setting must allow it)\n`);
+  });
+}

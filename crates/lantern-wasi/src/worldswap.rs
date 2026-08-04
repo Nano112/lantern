@@ -691,6 +691,15 @@ pub fn spawn_control(server: Arc<Server>) {
                     let cmd = String::from_utf8_lossy(&frame).trim().to_string();
                     if cmd == "swap" {
                         swap(&server, true).await;
+                    } else if let Some(n) = cmd.strip_prefix("viewdist ") {
+                        if let Ok(n) = n.trim().parse::<u8>() {
+                            let n = n.clamp(2, 16);
+                            pumpkin::world::chunker::LANTERN_VIEW_DISTANCE
+                                .store(n, std::sync::atomic::Ordering::Relaxed);
+                            tracing::info!(
+                                "worldswap: view distance set to {n} (players may need to move a chunk to trigger streaming)"
+                            );
+                        }
                     } else if let Some(rest) = cmd.strip_prefix("reset ") {
                         let mut it = rest.trim().split_whitespace();
                         let mode = it.next().unwrap_or("normal").to_string();

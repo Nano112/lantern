@@ -110,6 +110,11 @@
         <input id="cfg-motd" class="field" placeholder="MOTD (applies on next reboot)">
       </div>
       <div class="row">
+        <span class="hint" style="min-width:86px;">view distance</span>
+        <input id="cfg-viewdist" type="range" min="2" max="16" value="6" style="flex:1;">
+        <span id="cfg-viewdist-label" style="min-width:2ch; text-align:right;">6</span>
+      </div>
+      <div class="row">
         <button id="cfg-newworld" class="btn btn-warn" style="flex:1;">⟳ new world…</button>
         <button id="cfg-wipesave" class="btn btn-ghost" title="delete the OPFS save and reboot fresh">🗑 wipe save</button>
       </div>
