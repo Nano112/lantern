@@ -15,6 +15,10 @@ use pumpkin_util::math::vector2::Vector2;
 
 const SWAP_SOCK: &str = "world.sock";
 
+/// True while swap() is rebuilding player view areas — the streamed-gen
+/// counter stays quiet then so the two progress messages don't fight.
+static RESENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 async fn swap(server: &Arc<Server>, clear_cache: bool) {
     let world = server.worlds.load()[0].clone();
     let level = world.level.clone();
@@ -41,6 +45,7 @@ async fn swap(server: &Arc<Server>, clear_cache: bool) {
     // small batches, with progress on the dashboard: a full old-cache resend
     // once took 25s+ of silent grinding and timed the player out.
     const RADIUS: i32 = 6; // matches view_distance
+    RESENDING.store(true, std::sync::atomic::Ordering::Relaxed);
     for player in players.iter() {
         if let ClientPlatform::Java(java_client) = player.client.as_ref() {
             let bp = player.living_entity.entity.block_pos.load();
@@ -82,6 +87,7 @@ async fn swap(server: &Arc<Server>, clear_cache: bool) {
             }
         }
     }
+    RESENDING.store(false, std::sync::atomic::Ordering::Relaxed);
     crate::metrics::set_activity("");
     tracing::info!(
         "worldswap: world live for {} player(s) — chunks beyond view distance regenerate as explored",
@@ -473,7 +479,7 @@ async fn reset_chunk_source(server: &Arc<Server>, payload: &[u8]) {
         }
         static GENERATED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = GENERATED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        if n % 4 == 0 {
+        if n % 4 == 0 && !RESENDING.load(std::sync::atomic::Ordering::Relaxed) {
             crate::metrics::set_activity(&format!("streaming world — {n} chunks generated"));
         }
         let result = match source.generate(ChunkRequest::new(cx, cz)) {

@@ -670,14 +670,15 @@ document.getElementById("nw-create")?.addEventListener("click", async () => {
       catch (e) { writeText(`[world] bad ${label} JSON: ${e.message}\n`); return null; }
     };
     // Streamed kinds go through nucleation's ChunkSource (infinite worlds).
-    if (preset === "planet" || preset === "cellular" || preset === "custom" || preset === "osm" || preset === "riverfall") {
+    if (preset === "planet" || preset === "cellular" || preset === "custom" || preset === "osm" || preset === "riverfall" || preset === "alps") {
       let payload;
-      if (preset === "riverfall") {
-        nwStep("loading riverfall manifest (24 layers)");
+      if (preset === "riverfall" || preset === "alps") {
+        const file = preset === "alps" ? "lantern-alps.json" : "riverfall-world.json";
+        nwStep(`loading ${preset} manifest`);
         try {
-          const resp = await fetch("riverfall-world.json");
+          const resp = await fetch(file);
           payload = await resp.json();
-          nwStep("riverfall manifest loaded", true);
+          nwStep(`${preset} manifest loaded (${payload.layers.length} layers)`, true);
           payload.seed = /^\d+$/.test(seed) ? parseInt(seed, 10) : Math.floor(Math.random() * 2 ** 48);
         } catch (e) { writeText(`[world] riverfall manifest failed: ${e.message}\n`); return; }
       } else if (preset === "osm") {
