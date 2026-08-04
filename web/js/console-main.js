@@ -156,6 +156,12 @@ farmWorker.onmessage = (e) => {
   } else if (m.type === "metrics") {
     onMetrics(m.data);
     if (m.data && Array.isArray(m.data.player_list)) renderPlayers(m.data.player_list);
+    const act = document.getElementById("activity");
+    if (act) {
+      const text = (m.data && m.data.activity) || "";
+      act.textContent = text ? `⚙ ${text}` : "";
+      act.style.display = text ? "block" : "none";
+    }
   } else if (m.type === "error") {
     statusEl.textContent = "crashed — see console";
     writeText(`\n[lantern] ${m.error}\n`);

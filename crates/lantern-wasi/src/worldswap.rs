@@ -19,36 +19,59 @@ async fn swap(server: &Arc<Server>) {
     let world = server.worlds.load()[0].clone();
     let level = world.level.clone();
 
-    // Remember what was in memory, then drop it all — the next fetch reads
-    // the replaced region files.
-    let positions: Vec<Vector2<i32>> = level.loaded_chunks.iter().map(|e| *e.key()).collect();
+    let purged = level.loaded_chunks.len();
     level.loaded_chunks.clear();
-    tracing::info!(
-        "worldswap: purged {} cached chunks — reloading from the new world files",
-        positions.len()
-    );
+    tracing::info!("worldswap: dropped {purged} cached chunks");
 
     let players = world.players.load();
     if players.is_empty() {
+        crate::metrics::set_activity("");
         return;
     }
+
+    // Only the chunks each player can actually see get regenerated eagerly —
+    // everything else regenerates lazily on demand. Nearest chunks first, in
+    // small batches, with progress on the dashboard: a full old-cache resend
+    // once took 25s+ of silent grinding and timed the player out.
+    const RADIUS: i32 = 6; // matches view_distance
     for player in players.iter() {
         if let ClientPlatform::Java(java_client) = player.client.as_ref() {
-            java_client.send_packet_now(&CChunkBatchStart).await;
-            let mut sent = 0u16;
-            for pos in &positions {
-                let chunk = level
-                    .get_or_fetch_chunk(*pos, std::clone::Clone::clone)
+            let bp = player.living_entity.entity.block_pos.load();
+            let (pcx, pcz) = (bp.0.x >> 4, bp.0.z >> 4);
+            let mut positions: Vec<Vector2<i32>> = (-RADIUS..=RADIUS)
+                .flat_map(|dx| (-RADIUS..=RADIUS).map(move |dz| Vector2::new(pcx + dx, pcz + dz)))
+                .collect();
+            positions.sort_by_key(|p| {
+                let (dx, dz) = (p.x - pcx, p.y - pcz);
+                dx * dx + dz * dz
+            });
+            let total = positions.len();
+            let name = &player.gameprofile.name;
+            tracing::info!("worldswap: rebuilding {total} chunks around {name}…");
+            for (done, batch) in positions.chunks(16).enumerate() {
+                java_client.send_packet_now(&CChunkBatchStart).await;
+                for pos in batch {
+                    let chunk = level
+                        .get_or_fetch_chunk(*pos, std::clone::Clone::clone)
+                        .await;
+                    java_client.send_packet_now(&CChunkData(&chunk)).await;
+                }
+                java_client
+                    .send_packet_now(&CChunkBatchEnd::new(batch.len() as u16))
                     .await;
-                java_client.send_packet_now(&CChunkData(&chunk)).await;
-                sent += 1;
+                let sent = (done * 16 + batch.len()).min(total);
+                crate::metrics::set_activity(&format!(
+                    "regenerating world — {sent}/{total} chunks around {name}"
+                ));
+                if sent % 48 == 0 || sent == total {
+                    tracing::info!("worldswap: {sent}/{total} chunks around {name}");
+                }
             }
-            java_client.send_packet_now(&CChunkBatchEnd::new(sent)).await;
         }
     }
+    crate::metrics::set_activity("");
     tracing::info!(
-        "worldswap: re-sent {} chunks to {} player(s) — world swapped live",
-        positions.len(),
+        "worldswap: world live for {} player(s) — chunks beyond view distance regenerate as explored",
         players.len()
     );
 }
@@ -105,6 +128,7 @@ async fn reset(server: &Arc<Server>, mode: &str) {
     let _ = std::fs::remove_dir_all("world");
     let _ = std::fs::remove_file("schem_prev.bin");
     tracing::info!("worldswap: generator reset to \"{mode}\" (seed {seed}) — regenerating…");
+    crate::metrics::set_activity(&format!("generating a fresh \"{mode}\" world…"));
     swap(server).await;
 }
 
@@ -117,6 +141,7 @@ async fn convert_and_swap(server: &Arc<Server>, zip: &[u8]) {
         "worldswap: converting {} KiB old-version world with nucleation's DataConverter…",
         zip.len() / 1024
     );
+    crate::metrics::set_activity("upgrading old world with the DataConverter…");
     const R: i32 = 512; // ±32 chunks around origin — memory-bounded
     let mut schem =
         match nucleation::formats::world::from_world_zip_bounded(zip, -R, -64, -R, R, 320, R) {
