@@ -114,9 +114,9 @@
         </select>
       </div>
       <div class="row">
-        <button id="cfg-newworld" class="btn btn-warn" style="flex:1;">⟳ new world — live, no restart</button>
+        <button id="cfg-newworld" class="btn btn-warn" style="flex:1;">⟳ new world…</button>
+        <button id="cfg-wipesave" class="btn btn-ghost" title="delete the OPFS save and reboot fresh">🗑 wipe save</button>
       </div>
-      <div class="row"><span class="hint">swaps generator + seed in place; wipes the saved world</span></div>
     </div>
 
     <div class="card">
@@ -156,6 +156,28 @@
       <button id="drop-world" style="flex:1; background:#f0a030; color:#16130f; border:0; border-radius:4px; padding:8px; font:inherit; font-size:13px; cursor:pointer;">fresh void world</button>
     </div>
     <button id="drop-cancel" style="background:none; color:#9a8f7a; border:0; font:inherit; font-size:12px; cursor:pointer;">cancel</button>
+  </div>
+</div>
+
+<div id="nw-modal" style="position:fixed; inset:0; z-index:110; display:none; align-items:center; justify-content:center; background:rgba(10,8,6,.75);">
+  <div class="card" style="width:360px; display:flex; flex-direction:column; gap:12px; padding:20px;">
+    <h2 style="margin:0;">new world</h2>
+    <div class="row">
+      <select id="nw-gen" class="select" style="flex:1;">
+        <option value="normal">normal terrain</option>
+        <option value="void">void + bedrock floor</option>
+        <option value="flat">superflat</option>
+      </select>
+    </div>
+    <div class="row">
+      <input id="nw-seed" class="field" placeholder="seed (blank = random)" inputmode="numeric">
+    </div>
+    <label class="row hint" style="cursor:pointer;"><input id="nw-wipeopfs" type="checkbox"> also delete the OPFS save (full clean slate)</label>
+    <div class="hint">Live: the generator and seed swap in place — connected players stay online and terrain regenerates around them.</div>
+    <div class="row">
+      <button id="nw-create" class="btn btn-warn" style="flex:1;">create world</button>
+      <button id="nw-cancel" class="btn btn-ghost">cancel</button>
+    </div>
   </div>
 </div>
 </body>

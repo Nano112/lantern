@@ -641,7 +641,8 @@ async function liveWorldSwap(zipBytes) {
 
 self.onmessage = (e) => {
   if (e.data.type === "worldreset") {
-    worldSwapFd.push(new TextEncoder().encode(`reset ${e.data.gen || "normal"}`));
+    const seed = /^\d+$/.test(e.data.seed || "") ? ` ${e.data.seed}` : "";
+    worldSwapFd.push(new TextEncoder().encode(`reset ${e.data.gen || "normal"}${seed}`));
   } else if (e.data.type === "worldswap") {
     liveWorldSwap(e.data.bytes).catch((err) =>
       post({ type: "term", text: `[world] swap failed: ${err.message ?? err}\n` }));

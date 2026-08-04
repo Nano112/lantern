@@ -439,13 +439,28 @@ if (genSelect) genSelect.value = (gen || "normal");
 const infoGen = document.getElementById("info-gen");
 if (infoGen) infoGen.textContent = gen || "normal";
 genSelect?.addEventListener("change", () => { if (infoGen) infoGen.textContent = genSelect.value; });
+const nwModal = document.getElementById("nw-modal");
 document.getElementById("cfg-newworld")?.addEventListener("click", () => {
-  if (!confirm("Generate a brand-new world with the selected generator? (players stay connected)")) return;
-  const g = genSelect?.value || "normal";
+  document.getElementById("nw-gen").value = genSelect?.value || "normal";
+  nwModal.style.display = "flex";
+});
+document.getElementById("nw-cancel")?.addEventListener("click", () => nwModal.style.display = "none");
+async function wipeOpfsSave() {
+  const root = await navigator.storage.getDirectory();
+  for (const f of ["lantern-world.bin", "import-world.zip", "import-schem.bin"]) {
+    await root.removeEntry(f).catch(() => {});
+  }
+}
+document.getElementById("nw-create")?.addEventListener("click", async () => {
+  const g = document.getElementById("nw-gen").value;
+  const seed = document.getElementById("nw-seed").value.trim();
+  const wipe = document.getElementById("nw-wipeopfs").checked;
+  nwModal.style.display = "none";
+  if (genSelect) genSelect.value = g;
+  if (wipe) { await wipeOpfsSave(); writeText("[world] OPFS save deleted\n"); }
   if (serverRunning) {
-    // Live: generator + seed swap in place, chunks regenerate around players.
-    writeText(`[world] resetting to a fresh "${g}" world — no restart\n`);
-    farmWorker.postMessage({ type: "worldreset", gen: g });
+    writeText(`[world] resetting to a fresh "${g}" world${seed ? ` (seed ${seed})` : ""} — no restart\n`);
+    farmWorker.postMessage({ type: "worldreset", gen: g, seed });
   } else {
     const next = new URLSearchParams();
     if (params.has("offline")) next.set("offline", params.get("offline") || "1");
@@ -453,6 +468,15 @@ document.getElementById("cfg-newworld")?.addEventListener("click", () => {
     next.set("fresh", "1");
     location.href = `${location.pathname}?${next}`;
   }
+});
+document.getElementById("cfg-wipesave")?.addEventListener("click", async () => {
+  if (!confirm("Delete the saved world from this browser (OPFS) and reboot fresh?")) return;
+  await wipeOpfsSave();
+  const next = new URLSearchParams();
+  if (params.has("offline")) next.set("offline", params.get("offline") || "1");
+  if (params.has("gen")) next.set("gen", params.get("gen"));
+  next.set("fresh", "1");
+  location.href = `${location.pathname}?${next}`;
 });
 
 // --- player list + right-click actions ---

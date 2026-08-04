@@ -86,15 +86,17 @@ async fn swap(server: &Arc<Server>) {
 /// seed), wipe stored chunks, purge the cache and re-send around players.
 /// The status seed / level_info keep boot-time values until the next reload —
 /// terrain is what actually swaps.
-async fn reset(server: &Arc<Server>, mode: &str) {
+async fn reset(server: &Arc<Server>, mode: &str, seed_override: Option<u64>) {
     use pumpkin_world::generation::generator::FlatLayer;
     let world = server.worlds.load()[0].clone();
     let level = world.level.clone();
 
-    let seed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as u64 ^ (d.as_secs() << 20))
-        .unwrap_or(42);
+    let seed = seed_override.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u64 ^ (d.as_secs() << 20))
+            .unwrap_or(42)
+    });
     let (is_flat, layers) = match mode {
         "void" => (
             true,
@@ -141,6 +143,17 @@ async fn reset(server: &Arc<Server>, mode: &str) {
     {
         let mut loading = level.chunk_loading.lock().unwrap();
         loading.send_change(); // wake the scheduler so it processes the drop
+    }
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    // Second tap: anything mid-pipeline during the first wipe (commonly the
+    // chunk under a player) has landed by now — wipe it too so nothing keeps
+    // serving old terrain.
+    level
+        .lantern_drop_all_chunks
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    {
+        let mut loading = level.chunk_loading.lock().unwrap();
+        loading.send_change();
     }
     tokio::time::sleep(Duration::from_millis(100)).await;
     tracing::info!("worldswap: generator reset to \"{mode}\" (seed {seed}) — regenerating…");
@@ -220,8 +233,11 @@ pub fn spawn_control(server: Arc<Server>) {
                     let cmd = String::from_utf8_lossy(&frame).trim().to_string();
                     if cmd == "swap" {
                         swap(&server).await;
-                    } else if let Some(mode) = cmd.strip_prefix("reset ") {
-                        reset(&server, mode.trim()).await;
+                    } else if let Some(rest) = cmd.strip_prefix("reset ") {
+                        let mut it = rest.trim().split_whitespace();
+                        let mode = it.next().unwrap_or("normal").to_string();
+                        let seed = it.next().and_then(|s| s.parse::<u64>().ok());
+                        reset(&server, &mode, seed).await;
                     } else {
                         tracing::warn!("worldswap: unknown command {cmd:?}");
                     }
