@@ -176,10 +176,12 @@
     <div id="nw-sdf" style="display:none; flex-direction:column; gap:8px;">
       <div class="row">
         <select id="nw-sdf-preset" class="select" style="flex:1;">
-          <option value="planet">planet — 80-block sphere below spawn</option>
+          <option value="planet">planet — 80-block sphere (streamed)</option>
+          <option value="cellular">cellular — endless scattered motifs (streamed)</option>
           <option value="moons">three moons — union of spheres</option>
           <option value="slab">slab — elongated sphere plate</option>
-          <option value="custom">custom JSON…</option>
+          <option value="osm">OSM — building footprints JSON (streamed)</option>
+          <option value="custom">custom field JSON (streamed)</option>
         </select>
       </div>
       <textarea id="nw-sdf-json" class="field" rows="5" style="display:none; resize:vertical; font-size:11px;" placeholder='{"type":"sphere","radius":40}'></textarea>

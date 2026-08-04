@@ -161,6 +161,176 @@ async fn reset(server: &Arc<Server>, mode: &str, seed_override: Option<u64>) {
     swap(server).await;
 }
 
+/// Nucleation ChunkSource streaming worlds. Payload JSON:
+///   {"kind":"sdf","program":{...},"block":"minecraft:stone","minY":-64,"maxY":320}
+///   {"kind":"cellular","program":{...},"block":...,"minY":..,"maxY":..,
+///    "cell":48,"seed":1,"presence":[2,3]}
+///   {"kind":"osm","footprints":[...geojson-ish...],"base":"minecraft:grass_block"}
+/// Chunks are produced on demand by nucleation and written into the world by
+/// the fork's chunk_fill generator — infinite, streamed as explored.
+async fn reset_chunk_source(server: &Arc<Server>, payload: &[u8]) {
+    use nucleation::building::{BrushEnum, SolidBrush};
+    use nucleation::world_generation::{
+        CellularSdfChunkSource, CellularSdfConfig, ChunkRequest, ChunkSource,
+        ProjectedFootprintChunkSource, SdfChunkSource, SourceProvenance,
+    };
+
+    let world = server.worlds.load()[0].clone();
+    let level = world.level.clone();
+    let v: serde_json::Value = match serde_json::from_slice(payload) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("worldswap: chunksrc payload is not JSON: {e}");
+            return;
+        }
+    };
+    let kind = v["kind"].as_str().unwrap_or("sdf").to_string();
+    let provenance = match SourceProvenance::new("lantern", "1") {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("worldswap: provenance: {e:?}");
+            return;
+        }
+    };
+    let brush = |name: &str| {
+        BrushEnum::Solid(SolidBrush::new(nucleation::BlockState::new(
+            name.to_string(),
+        )))
+    };
+    let min_y = v["minY"].as_i64().unwrap_or(-64) as i32;
+    let max_y = v["maxY"].as_i64().unwrap_or(120) as i32;
+    let block = v["block"].as_str().unwrap_or("minecraft:stone").to_string();
+
+    let source: std::sync::Arc<dyn ChunkSource> = match kind.as_str() {
+        "cellular" => {
+            let node = match nucleation::sdf::SdfNode::from_json(&v["program"].to_string()) {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::warn!("worldswap: chunksrc sdf rejected: {e}");
+                    return;
+                }
+            };
+            let mut cfg = CellularSdfConfig::default();
+            if let Some(c) = v["cell"].as_i64() {
+                cfg.cell_size_x = c as i32;
+                cfg.cell_size_z = c as i32;
+            }
+            if let Some(seed) = v["seed"].as_u64() {
+                cfg.seed = seed;
+            }
+            if let (Some(n), Some(d)) = (v["presence"][0].as_u64(), v["presence"][1].as_u64()) {
+                cfg.presence_numerator = n as u32;
+                cfg.presence_denominator = d as u32;
+            }
+            match CellularSdfChunkSource::new(node, brush(&block), min_y, max_y, cfg, provenance) {
+                Ok(s) => std::sync::Arc::new(s),
+                Err(e) => {
+                    tracing::warn!("worldswap: cellular source rejected: {e:?}");
+                    return;
+                }
+            }
+        }
+        "osm" => {
+            let footprints =
+                match nucleation::geo::parse_footprints_json(&v["footprints"].to_string()) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        tracing::warn!("worldswap: footprints rejected: {e}");
+                        return;
+                    }
+                };
+            let base = v["base"].as_str().map(str::to_string);
+            let count = footprints.len();
+            match ProjectedFootprintChunkSource::new(footprints, base, provenance) {
+                Ok(s) => {
+                    tracing::info!("worldswap: OSM source ready ({count} footprints)");
+                    std::sync::Arc::new(s)
+                }
+                Err(e) => {
+                    tracing::warn!("worldswap: osm source rejected: {e:?}");
+                    return;
+                }
+            }
+        }
+        _ => {
+            let node = match nucleation::sdf::SdfNode::from_json(&v["program"].to_string()) {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::warn!("worldswap: chunksrc sdf rejected: {e}");
+                    return;
+                }
+            };
+            match SdfChunkSource::new(node, brush(&block), min_y, max_y, provenance) {
+                Ok(s) => std::sync::Arc::new(s),
+                Err(e) => {
+                    tracing::warn!("worldswap: sdf source rejected: {e:?}");
+                    return;
+                }
+            }
+        }
+    };
+
+    // nucleation blocks -> pumpkin state ids, memoized per descriptor.
+    let fill = std::sync::Arc::new(move |cx: i32, cz: i32| {
+        use pumpkin_world::generation::structure::template::{BlockStateResolver, PaletteEntry};
+        use std::cell::RefCell;
+        thread_local! {
+            static CACHE: RefCell<std::collections::HashMap<String, u16>> =
+                RefCell::new(std::collections::HashMap::new());
+        }
+        let result = match source.generate(ChunkRequest::new(cx, cz)) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("chunksrc: generate ({cx},{cz}): {e:?}");
+                return Vec::new();
+            }
+        };
+        let mut out = Vec::new();
+        for (x, y, z, state) in result.chunk().blocks() {
+            let key = format!("{state:?}");
+            let id = CACHE.with(|c| {
+                if let Some(id) = c.borrow().get(&key) {
+                    return *id;
+                }
+                let entry = PaletteEntry::with_properties(
+                    state.name.to_string(),
+                    state
+                        .properties
+                        .iter()
+                        .map(|(k, val)| (k.to_string(), val.to_string()))
+                        .collect(),
+                );
+                let id = BlockStateResolver::resolve_simple(&entry)
+                    .map_or(0, |s| s.id.as_u16());
+                c.borrow_mut().insert(key.clone(), id);
+                id
+            });
+            if id != 0 {
+                out.push((x, y, z, id));
+            }
+        }
+        out
+    });
+
+    level.lantern_swap_generator_chunks(
+        pumpkin_util::world_seed::Seed(0),
+        fill,
+        "minecraft:plains".to_string(),
+    );
+    let _ = std::fs::remove_dir_all("world");
+    let _ = std::fs::remove_file("schem_prev.bin");
+    for _ in 0..2 {
+        level
+            .lantern_drop_all_chunks
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        level.chunk_loading.lock().unwrap().send_change();
+        tokio::time::sleep(Duration::from_millis(125)).await;
+    }
+    tracing::info!("worldswap: chunk-source world active (kind {kind}) — streaming as explored");
+    crate::metrics::set_activity("generating streamed world…");
+    swap(server).await;
+}
+
 /// SDF world: payload is JSON {"block":"minecraft:stone","scale":1.0,
 /// "y":0,"program":{...sdf node json...}} — nucleation validates the program
 /// (sandboxed, provably terminating), and blocks exist wherever the field is
@@ -284,7 +454,9 @@ pub fn spawn_control(server: Arc<Server>) {
                     break;
                 }
                 let frame: Vec<u8> = acc.drain(..4 + flen).skip(4).collect();
-                if frame.starts_with(b"sdf:") {
+                if frame.starts_with(b"chunksrc:") {
+                    reset_chunk_source(&server, &frame["chunksrc:".len()..]).await;
+                } else if frame.starts_with(b"sdf:") {
                     reset_sdf(&server, &frame["sdf:".len()..]).await;
                 } else if frame.starts_with(b"convert:") {
                     convert_and_swap(&server, &frame["convert:".len()..]).await;

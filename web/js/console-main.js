@@ -468,7 +468,11 @@ nwGenSel?.addEventListener("change", () => {
   nwSdfBox.style.display = nwGenSel.value === "sdf" ? "flex" : "none";
 });
 nwSdfPreset?.addEventListener("change", () => {
-  nwSdfJson.style.display = nwSdfPreset.value === "custom" ? "block" : "none";
+  const needsJson = nwSdfPreset.value === "custom" || nwSdfPreset.value === "osm";
+  nwSdfJson.style.display = needsJson ? "block" : "none";
+  nwSdfJson.placeholder = nwSdfPreset.value === "osm"
+    ? '[{"polygon":[[0,0],[20,0],[20,12],[0,12]],"height":15,"block":"minecraft:bricks"}]'
+    : '{"type":"sphere","radius":40}';
 });
 
 document.getElementById("nw-create")?.addEventListener("click", async () => {
@@ -479,20 +483,38 @@ document.getElementById("nw-create")?.addEventListener("click", async () => {
   if (genSelect) genSelect.value = g;
   if (wipe) { await wipeOpfsSave(); writeText("[world] OPFS save deleted\n"); }
   if (g === "sdf") {
-    let entry;
-    if (nwSdfPreset.value === "custom") {
-      try { entry = { y: 0, program: JSON.parse(nwSdfJson.value) }; }
-      catch (e) { writeText(`[world] bad SDF JSON: ${e.message}\n`); return; }
-    } else {
-      entry = SDF_PRESETS[nwSdfPreset.value];
+    const preset = nwSdfPreset.value;
+    const block = document.getElementById("nw-sdf-block").value || "minecraft:stone";
+    const parseJson = (label) => {
+      try { return JSON.parse(nwSdfJson.value); }
+      catch (e) { writeText(`[world] bad ${label} JSON: ${e.message}\n`); return null; }
+    };
+    // Streamed kinds go through nucleation's ChunkSource (infinite worlds).
+    if (preset === "planet" || preset === "cellular" || preset === "custom" || preset === "osm") {
+      let payload;
+      if (preset === "osm") {
+        const fp = parseJson("footprints"); if (!fp) return;
+        payload = { kind: "osm", footprints: fp, base: block };
+      } else if (preset === "cellular") {
+        payload = { kind: "cellular", block, minY: -60, maxY: 200,
+          program: { type: "sphere", radius: 12 }, cell: 48, seed: Date.now() % 100000, presence: [2, 3] };
+      } else {
+        const program = preset === "custom" ? parseJson("SDF") : { type: "sphere", radius: 80 };
+        if (!program) return;
+        payload = { kind: "sdf", block, minY: -100, maxY: 200, program };
+      }
+      writeText(`[world] streaming ${preset} world from nucleation — no restart\n`);
+      farmWorker.postMessage({ type: "worldchunksrc", payload: JSON.stringify(payload) });
+      return;
     }
+    const entry = SDF_PRESETS[preset];
     const payload = {
-      block: document.getElementById("nw-sdf-block").value || "minecraft:stone",
+      block,
       scale: parseFloat(document.getElementById("nw-sdf-scale").value) || 1.0,
       y: entry.y,
       program: entry.program,
     };
-    writeText(`[world] generating SDF world (${nwSdfPreset.value}) — no restart\n`);
+    writeText(`[world] generating SDF world (${preset}) — no restart\n`);
     farmWorker.postMessage({ type: "worldsdf", payload: JSON.stringify(payload) });
     return;
   }

@@ -640,7 +640,13 @@ async function liveWorldSwap(zipBytes) {
 }
 
 self.onmessage = (e) => {
-  if (e.data.type === "worldsdf") {
+  if (e.data.type === "worldchunksrc") {
+    const cmd = new TextEncoder().encode("chunksrc:");
+    const body = new TextEncoder().encode(e.data.payload);
+    const framed = new Uint8Array(cmd.length + body.length);
+    framed.set(cmd); framed.set(body, cmd.length);
+    worldSwapFd.push(framed);
+  } else if (e.data.type === "worldsdf") {
     const cmd = new TextEncoder().encode("sdf:");
     const body = new TextEncoder().encode(e.data.payload);
     const framed = new Uint8Array(cmd.length + body.length);
