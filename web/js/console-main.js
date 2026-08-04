@@ -475,23 +475,127 @@ nwSdfPreset?.addEventListener("change", () => {
 // Overpass → nucleation footprints: query buildings around lat/lon, project
 // to blocks (1m ≈ 1 block, equirectangular at that latitude), height from
 // tags (height in meters, else building:levels × 3m, else 8).
+// AWS terrarium elevation tiles -> heightmap grid centered at lat/lon.
+// h_meters = R*256 + G + B/256 - 32768; 1 block = 1 m, min height -> y 2.
+async function fetchTerrainGrid(lat, lon, radius, base) {
+  const Z = 14;
+  const n = 2 ** Z;
+  const latRad = lat * Math.PI / 180;
+  const tx = (lon + 180) / 360 * n;
+  const ty = (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n;
+  const mPerPx = 156543.03 * Math.cos(latRad) / (2 ** Z) / 256 * 256 / 256; // per pixel at z
+  const metersPerTile = 40075016.7 * Math.cos(latRad) / n;
+  const tileSpan = Math.ceil(radius / metersPerTile) ;
+  const tiles = new Map();
+  const loads = [];
+  for (let dx = -tileSpan; dx <= tileSpan; dx++) {
+    for (let dy = -tileSpan; dy <= tileSpan; dy++) {
+      const X = Math.floor(tx) + dx, Y = Math.floor(ty) + dy;
+      loads.push((async () => {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.src = `${base}/api/terrain/elevation-tiles-prod/terrarium/${Z}/${X}/${Y}.png`;
+        await img.decode();
+        const c = document.createElement("canvas");
+        c.width = c.height = 256;
+        const g = c.getContext("2d");
+        g.drawImage(img, 0, 0);
+        tiles.set(`${X},${Y}`, g.getImageData(0, 0, 256, 256).data);
+      })().catch(() => {}));
+    }
+  }
+  await Promise.all(loads);
+  const elevAt = (la, lo) => {
+    const fx = (lo + 180) / 360 * n;
+    const laR = la * Math.PI / 180;
+    const fy = (1 - Math.log(Math.tan(laR) + 1 / Math.cos(laR)) / Math.PI) / 2 * n;
+    const X = Math.floor(fx), Y = Math.floor(fy);
+    const d = tiles.get(`${X},${Y}`);
+    if (!d) return null;
+    const px = Math.min(255, Math.floor((fx - X) * 256));
+    const py = Math.min(255, Math.floor((fy - Y) * 256));
+    const i = (py * 256 + px) * 4;
+    return d[i] * 256 + d[i + 1] + d[i + 2] / 256 - 32768;
+  };
+  const mLat = 111320, mLon = 111320 * Math.cos(latRad);
+  const step = Math.max(2, Math.round(radius / 250));
+  const half = Math.ceil(radius / step);
+  const width = half * 2 + 1;
+  const heights = new Array(width * width).fill(0);
+  let min = Infinity, max = -Infinity;
+  for (let gz = 0; gz < width; gz++) {
+    for (let gx = 0; gx < width; gx++) {
+      const wx = (gx - half) * step, wz = (gz - half) * step;
+      const e = elevAt(lat - wz / mLat, lon + wx / mLon);
+      heights[gz * width + gx] = e === null ? 0 : e;
+      if (e !== null) { min = Math.min(min, e); max = Math.max(max, e); }
+    }
+  }
+  if (!isFinite(min)) return null;
+  for (let i = 0; i < heights.length; i++) {
+    heights[i] = Math.max(1, Math.round(heights[i] - min) + 2);
+  }
+  writeText(`[osm] terrain: ${width}x${width} grid, relief ${(max - min).toFixed(0)}m (step ${step})\n`);
+  return { heights, width, originX: -half * step, originZ: -half * step, step,
+           surface: "minecraft:grass_block", sub: "minecraft:stone",
+           sample: (wx, wz) => heights[
+             Math.min(width - 1, Math.max(0, Math.round((wz + half * step) / step))) * width +
+             Math.min(width - 1, Math.max(0, Math.round((wx + half * step) / step)))] };
+}
+
+const ROAD_STYLE = {
+  motorway: [12, "minecraft:gray_concrete"], trunk: [11, "minecraft:gray_concrete"],
+  primary: [9, "minecraft:gray_concrete"], secondary: [8, "minecraft:gray_concrete"],
+  tertiary: [7, "minecraft:gray_concrete"], residential: [6, "minecraft:gray_concrete"],
+  service: [4, "minecraft:light_gray_concrete"], footway: [2, "minecraft:dirt_path"],
+  path: [2, "minecraft:dirt_path"], cycleway: [3, "minecraft:stone_bricks"],
+  pedestrian: [5, "minecraft:stone_bricks"], unclassified: [5, "minecraft:gray_concrete"],
+};
+
+// A road polyline becomes one thin quad footprint per segment, each seated on
+// the terrain at its midpoint — roads climb hills in steps.
+function roadFootprints(el, lon, lat, mLon, mLat, terrain) {
+  const style = ROAD_STYLE[(el.tags || {}).highway];
+  if (!style) return [];
+  const [w, block] = style;
+  const pts = el.geometry.map((pt) => [(pt.lon - lon) * mLon, -((pt.lat - lat) * mLat)]);
+  const out = [];
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const [x1, z1] = pts[i], [x2, z2] = pts[i + 1];
+    const dx = x2 - x1, dz = z2 - z1;
+    const len = Math.hypot(dx, dz);
+    if (len < 0.5) continue;
+    const nx = (-dz / len) * (w / 2), nz = (dx / len) * (w / 2);
+    const y = terrain ? terrain.sample((x1 + x2) / 2, (z1 + z2) / 2) : 1;
+    out.push({
+      polygon: [[x1 + nx, z1 + nz], [x2 + nx, z2 + nz], [x2 - nx, z2 - nz], [x1 - nx, z1 - nz]],
+      height: y, min_y: y, block,
+    });
+  }
+  return out;
+}
+
 async function fetchOsmFootprints(lat, lon, radius) {
   const base = location.hostname === "localhost"
     ? "http://localhost:9091"
     : (!location.port || location.port === "443") ? "" : `https://${location.hostname}:9443`;
-  const q = `[out:json][timeout:25];way["building"](around:${radius},${lat},${lon});out geom;`;
+  const q = `[out:json][timeout:25];(way["building"](around:${radius},${lat},${lon});way["highway"](around:${radius},${lat},${lon}););out geom;`;
   writeText(`[osm] querying Overpass for buildings within ${radius}m of ${lat}, ${lon}…\n`);
   // Public Overpass instances slot-limit per IP — rotate mirrors and retry.
   let data = null, lastErr = null;
   for (const route of ["/api/overpass", "/api/overpass-alt", "/api/overpass"]) {
     try {
-      const resp = await fetch(`${base}${route}/api/interpreter?data=${encodeURIComponent(q)}`);
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 45000);
+      const resp = await fetch(`${base}${route}/api/interpreter?data=${encodeURIComponent(q)}`,
+        { signal: ctl.signal });
+      clearTimeout(timer);
       if (!resp.ok) { lastErr = new Error(`Overpass HTTP ${resp.status}`); continue; }
       data = await resp.json();
       break;
     } catch (e) {
       lastErr = e;
-      writeText(`[osm] mirror ${route} failed (${e.message}) — trying next…\n`);
+      writeText(`[osm] mirror ${route} failed (${e.name === "AbortError" ? "timeout" : e.message}) — trying next…\n`);
       await new Promise((r) => setTimeout(r, 2000));
     }
   }
@@ -501,25 +605,44 @@ async function fetchOsmFootprints(lat, lon, radius) {
   const BLOCKS = { church: "minecraft:stone_bricks", cathedral: "minecraft:stone_bricks",
     industrial: "minecraft:gray_concrete", retail: "minecraft:white_concrete",
     apartments: "minecraft:bricks", house: "minecraft:oak_planks" };
+  const base2 = location.hostname === "localhost"
+    ? "http://localhost:9091"
+    : (!location.port || location.port === "443") ? "" : `https://${location.hostname}:9443`;
+  let terrain = null;
+  try { terrain = await fetchTerrainGrid(lat, lon, radius, base2); }
+  catch (e) { writeText(`[osm] terrain unavailable (${e.message}) — flat base\n`); }
+
   const footprints = [];
+  let roads = 0;
   for (const el of data.elements || []) {
-    if (el.type !== "way" || !el.geometry || el.geometry.length < 4) continue;
-    const polygon = el.geometry.map((pt) => [
-      (pt.lon - lon) * mLon,
-      -((pt.lat - lat) * mLat),
-    ]);
+    if (el.type !== "way" || !el.geometry) continue;
     const tags = el.tags || {};
-    let h = parseFloat(tags.height) || (parseInt(tags["building:levels"], 10) || 0) * 3 || 8;
-    h = Math.min(Math.round(h), 250);
-    footprints.push({
-      polygon,
-      height: h + 1,
-      min_y: 1,
-      block: BLOCKS[tags.building] || "minecraft:bricks",
-    });
+    if (tags.building && el.geometry.length >= 4) {
+      const polygon = el.geometry.map((pt) => [
+        (pt.lon - lon) * mLon,
+        -((pt.lat - lat) * mLat),
+      ]);
+      let h = parseFloat(tags.height) || (parseInt(tags["building:levels"], 10) || 0) * 3 || 8;
+      h = Math.min(Math.round(h), 250);
+      // Seat on terrain at the footprint centroid.
+      let cx = 0, cz = 0;
+      for (const [px, pz] of polygon) { cx += px; cz += pz; }
+      cx /= polygon.length; cz /= polygon.length;
+      const ground = terrain ? terrain.sample(cx, cz) : 1;
+      footprints.push({
+        polygon,
+        height: ground + h,
+        min_y: ground,
+        block: BLOCKS[tags.building] || "minecraft:bricks",
+      });
+    } else if (tags.highway && el.geometry.length >= 2) {
+      const segs = roadFootprints(el, lon, lat, mLon, mLat, terrain);
+      roads += segs.length ? 1 : 0;
+      footprints.push(...segs);
+    }
   }
-  writeText(`[osm] ${footprints.length} buildings converted\n`);
-  return footprints;
+  writeText(`[osm] ${footprints.filter(f => f.height > f.min_y).length} buildings + ${roads} roads converted\n`);
+  return { footprints, terrain };
 }
 
 document.getElementById("nw-create")?.addEventListener("click", async () => {
@@ -540,15 +663,23 @@ document.getElementById("nw-create")?.addEventListener("click", async () => {
     if (preset === "planet" || preset === "cellular" || preset === "custom" || preset === "osm") {
       let payload;
       if (preset === "osm") {
+        if (window.__osmBusy) { writeText("[osm] a fetch is already running — wait for it\n"); return; }
+        window.__osmBusy = true;
+        setTimeout(() => { window.__osmBusy = false; }, 120000);
         const lat = parseFloat(document.getElementById("nw-osm-lat").value);
         const lon = parseFloat(document.getElementById("nw-osm-lon").value);
         const radius = Math.min(parseInt(document.getElementById("nw-osm-radius").value, 10) || 250, 1500);
         if (!isFinite(lat) || !isFinite(lon)) { writeText("[osm] bad lat/lon\n"); return; }
-        let fp;
-        try { fp = await fetchOsmFootprints(lat, lon, radius); }
-        catch (e) { writeText(`[osm] ${e.message}\n`); return; }
-        if (!fp.length) { writeText("[osm] no buildings found there\n"); return; }
-        payload = { kind: "osm", footprints: fp, base: "minecraft:grass_block" };
+        let res;
+        try { res = await fetchOsmFootprints(lat, lon, radius); }
+        catch (e) { writeText(`[osm] ${e.message}\n`); window.__osmBusy = false; return; }
+        window.__osmBusy = false;
+        if (!res.footprints.length) { writeText("[osm] nothing found there\n"); return; }
+        payload = { kind: "osm", footprints: res.footprints, base: null };
+        if (res.terrain) {
+          const { sample, ...t } = res.terrain;
+          payload.terrain = t;
+        }
       } else if (preset === "cellular") {
         payload = { kind: "cellular", block, minY: -60, maxY: 200,
           program: { type: "sphere", radius: 12 }, cell: 48, seed: Date.now() % 100000, presence: [2, 3] };

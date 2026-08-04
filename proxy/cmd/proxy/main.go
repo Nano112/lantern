@@ -184,6 +184,8 @@ func main() {
 	apiMux.Handle("/api/schematio/", corsWrap(mojangLimiter.HTTPMiddleware(hostProxy("https://schemat.io", "/api/schematio"))))
 	// lantern: OSM building footprints for streamed real-world worlds.
 	apiMux.Handle("/api/overpass/", corsWrap(mojangLimiter.HTTPMiddleware(hostProxy("https://overpass-api.de", "/api/overpass"))))
+	// lantern: AWS terrarium elevation tiles for OSM terrain.
+	apiMux.Handle("/api/terrain/", corsWrap(mojangLimiter.HTTPMiddleware(hostProxy("https://s3.amazonaws.com", "/api/terrain"))))
 	apiMux.Handle("/api/overpass-alt/", corsWrap(mojangLimiter.HTTPMiddleware(hostProxy("https://overpass.kumi.systems", "/api/overpass-alt"))))
 
 	apiMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -194,8 +196,10 @@ func main() {
 	apiServer := &http.Server{
 		Addr:         fmt.Sprintf(":%d", *apiPort),
 		Handler:      apiMux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		ReadTimeout:  30 * time.Second,
+		// Overpass/terrain proxying: upstream can take 25s+ before first byte;
+		// a short write timeout kills those responses mid-flight.
+		WriteTimeout: 120 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 	go func() {

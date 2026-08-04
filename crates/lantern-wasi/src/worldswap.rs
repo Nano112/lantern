@@ -277,6 +277,65 @@ async fn reset_chunk_source(server: &Arc<Server>, payload: &[u8]) {
         }
     };
 
+    // Optional terrain grid (OSM worlds): flat i32 heights row-major,
+    // sampled every `step` blocks, origin at world (originX, originZ).
+    struct Terrain {
+        heights: Vec<i32>,
+        width: i32,
+        depth: i32,
+        origin_x: i32,
+        origin_z: i32,
+        step: i32,
+        surface: u16,
+        dirt: u16,
+        sub: u16,
+    }
+    let terrain: Option<Terrain> = v["terrain"].as_object().and_then(|t| {
+        let heights: Vec<i32> = t
+            .get("heights")?
+            .as_array()?
+            .iter()
+            .filter_map(|x| x.as_i64().map(|n| n as i32))
+            .collect();
+        let width = t.get("width")?.as_i64()? as i32;
+        if width <= 0 || heights.len() < width as usize {
+            return None;
+        }
+        let resolve = |name: &str, def: &str| {
+            use pumpkin_world::generation::structure::template::{
+                BlockStateResolver, PaletteEntry,
+            };
+            let e = PaletteEntry::with_properties(name.to_string(), Vec::new());
+            BlockStateResolver::resolve_simple(&e).map_or_else(
+                || {
+                    let e = PaletteEntry::with_properties(def.to_string(), Vec::new());
+                    BlockStateResolver::resolve_simple(&e).map_or(0, |s| s.id.as_u16())
+                },
+                |s| s.id.as_u16(),
+            )
+        };
+        Some(Terrain {
+            depth: heights.len() as i32 / width,
+            heights,
+            width,
+            origin_x: t.get("originX").and_then(|x| x.as_i64()).unwrap_or(0) as i32,
+            origin_z: t.get("originZ").and_then(|x| x.as_i64()).unwrap_or(0) as i32,
+            step: t.get("step").and_then(|x| x.as_i64()).unwrap_or(2).max(1) as i32,
+            surface: resolve(
+                t.get("surface").and_then(|x| x.as_str()).unwrap_or("minecraft:grass_block"),
+                "minecraft:grass_block",
+            ),
+            dirt: resolve("minecraft:dirt", "minecraft:dirt"),
+            sub: resolve(
+                t.get("sub").and_then(|x| x.as_str()).unwrap_or("minecraft:stone"),
+                "minecraft:stone",
+            ),
+        })
+    });
+    if terrain.is_some() {
+        tracing::info!("worldswap: terrain heightmap attached");
+    }
+
     // nucleation blocks -> pumpkin state ids, memoized per descriptor.
     let fill = std::sync::Arc::new(move |cx: i32, cz: i32| {
         use pumpkin_world::generation::structure::template::{BlockStateResolver, PaletteEntry};
@@ -293,6 +352,29 @@ async fn reset_chunk_source(server: &Arc<Server>, payload: &[u8]) {
             }
         };
         let mut out = Vec::new();
+        if let Some(t) = &terrain {
+            // Bilinear-free nearest sample: terrain grid step is small enough
+            // that per-column nearest lookup reads fine in-game.
+            for bx in 0..16 {
+                for bz in 0..16 {
+                    let wx = cx * 16 + bx;
+                    let wz = cz * 16 + bz;
+                    let gx = ((wx - t.origin_x) / t.step).clamp(0, t.width - 1);
+                    let gz = ((wz - t.origin_z) / t.step).clamp(0, t.depth - 1);
+                    let h = t.heights[(gz * t.width + gx) as usize].max(1);
+                    for y in 1..=h {
+                        let id = if y == h {
+                            t.surface
+                        } else if y >= h - 3 {
+                            t.dirt
+                        } else {
+                            t.sub
+                        };
+                        out.push((wx, y, wz, id));
+                    }
+                }
+            }
+        }
         for (x, y, z, state) in result.chunk().blocks() {
             let key = format!("{state:?}");
             let id = CACHE.with(|c| {
