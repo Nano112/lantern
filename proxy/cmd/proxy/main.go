@@ -182,6 +182,9 @@ func main() {
 	apiMux.Handle("/api/mojang-api/", corsWrap(mojangLimiter.HTTPMiddleware(hostProxy("https://api.mojang.com", "/api/mojang-api"))))
 	// lantern: schematic fetching for the in-browser schematic-viewer worlds.
 	apiMux.Handle("/api/schematio/", corsWrap(mojangLimiter.HTTPMiddleware(hostProxy("https://schemat.io", "/api/schematio"))))
+	// lantern: OSM building footprints for streamed real-world worlds.
+	apiMux.Handle("/api/overpass/", corsWrap(mojangLimiter.HTTPMiddleware(hostProxy("https://overpass-api.de", "/api/overpass"))))
+	apiMux.Handle("/api/overpass-alt/", corsWrap(mojangLimiter.HTTPMiddleware(hostProxy("https://overpass.kumi.systems", "/api/overpass-alt"))))
 
 	apiMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -276,6 +279,20 @@ func hostProxy(target string, prefix string) http.Handler {
 		},
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{},
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			// corsWrap adds our CORS headers; upstreams that also set them
+			// (Overpass does when it sees an Origin) would produce duplicate
+			// Access-Control-Allow-Origin values, which browsers reject.
+			for _, h := range []string{
+				"Access-Control-Allow-Origin",
+				"Access-Control-Allow-Methods",
+				"Access-Control-Allow-Headers",
+				"Access-Control-Max-Age",
+			} {
+				resp.Header.Del(h)
+			}
+			return nil
 		},
 	}
 }

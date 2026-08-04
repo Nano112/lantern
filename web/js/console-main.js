@@ -468,12 +468,59 @@ nwGenSel?.addEventListener("change", () => {
   nwSdfBox.style.display = nwGenSel.value === "sdf" ? "flex" : "none";
 });
 nwSdfPreset?.addEventListener("change", () => {
-  const needsJson = nwSdfPreset.value === "custom" || nwSdfPreset.value === "osm";
-  nwSdfJson.style.display = needsJson ? "block" : "none";
-  nwSdfJson.placeholder = nwSdfPreset.value === "osm"
-    ? '[{"polygon":[[0,0],[20,0],[20,12],[0,12]],"height":15,"block":"minecraft:bricks"}]'
-    : '{"type":"sphere","radius":40}';
+  nwSdfJson.style.display = nwSdfPreset.value === "custom" ? "block" : "none";
+  document.getElementById("nw-osm-row").style.display = nwSdfPreset.value === "osm" ? "flex" : "none";
 });
+
+// Overpass → nucleation footprints: query buildings around lat/lon, project
+// to blocks (1m ≈ 1 block, equirectangular at that latitude), height from
+// tags (height in meters, else building:levels × 3m, else 8).
+async function fetchOsmFootprints(lat, lon, radius) {
+  const base = location.hostname === "localhost"
+    ? "http://localhost:9091"
+    : (!location.port || location.port === "443") ? "" : `https://${location.hostname}:9443`;
+  const q = `[out:json][timeout:25];way["building"](around:${radius},${lat},${lon});out geom;`;
+  writeText(`[osm] querying Overpass for buildings within ${radius}m of ${lat}, ${lon}…\n`);
+  // Public Overpass instances slot-limit per IP — rotate mirrors and retry.
+  let data = null, lastErr = null;
+  for (const route of ["/api/overpass", "/api/overpass-alt", "/api/overpass"]) {
+    try {
+      const resp = await fetch(`${base}${route}/api/interpreter?data=${encodeURIComponent(q)}`);
+      if (!resp.ok) { lastErr = new Error(`Overpass HTTP ${resp.status}`); continue; }
+      data = await resp.json();
+      break;
+    } catch (e) {
+      lastErr = e;
+      writeText(`[osm] mirror ${route} failed (${e.message}) — trying next…\n`);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+  if (!data) throw lastErr || new Error("all Overpass mirrors failed");
+  const mLat = 111320;
+  const mLon = 111320 * Math.cos(lat * Math.PI / 180);
+  const BLOCKS = { church: "minecraft:stone_bricks", cathedral: "minecraft:stone_bricks",
+    industrial: "minecraft:gray_concrete", retail: "minecraft:white_concrete",
+    apartments: "minecraft:bricks", house: "minecraft:oak_planks" };
+  const footprints = [];
+  for (const el of data.elements || []) {
+    if (el.type !== "way" || !el.geometry || el.geometry.length < 4) continue;
+    const polygon = el.geometry.map((pt) => [
+      (pt.lon - lon) * mLon,
+      -((pt.lat - lat) * mLat),
+    ]);
+    const tags = el.tags || {};
+    let h = parseFloat(tags.height) || (parseInt(tags["building:levels"], 10) || 0) * 3 || 8;
+    h = Math.min(Math.round(h), 250);
+    footprints.push({
+      polygon,
+      height: h + 1,
+      min_y: 1,
+      block: BLOCKS[tags.building] || "minecraft:bricks",
+    });
+  }
+  writeText(`[osm] ${footprints.length} buildings converted\n`);
+  return footprints;
+}
 
 document.getElementById("nw-create")?.addEventListener("click", async () => {
   const g = document.getElementById("nw-gen").value;
@@ -493,8 +540,15 @@ document.getElementById("nw-create")?.addEventListener("click", async () => {
     if (preset === "planet" || preset === "cellular" || preset === "custom" || preset === "osm") {
       let payload;
       if (preset === "osm") {
-        const fp = parseJson("footprints"); if (!fp) return;
-        payload = { kind: "osm", footprints: fp, base: block };
+        const lat = parseFloat(document.getElementById("nw-osm-lat").value);
+        const lon = parseFloat(document.getElementById("nw-osm-lon").value);
+        const radius = Math.min(parseInt(document.getElementById("nw-osm-radius").value, 10) || 250, 1500);
+        if (!isFinite(lat) || !isFinite(lon)) { writeText("[osm] bad lat/lon\n"); return; }
+        let fp;
+        try { fp = await fetchOsmFootprints(lat, lon, radius); }
+        catch (e) { writeText(`[osm] ${e.message}\n`); return; }
+        if (!fp.length) { writeText("[osm] no buildings found there\n"); return; }
+        payload = { kind: "osm", footprints: fp, base: "minecraft:grass_block" };
       } else if (preset === "cellular") {
         payload = { kind: "cellular", block, minY: -60, maxY: 200,
           program: { type: "sphere", radius: 12 }, cell: 48, seed: Date.now() % 100000, presence: [2, 3] };
