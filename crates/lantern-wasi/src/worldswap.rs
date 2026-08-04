@@ -268,6 +268,7 @@ async fn reset_chunk_source(server: &Arc<Server>, payload: &[u8]) {
                     _ => None,
                 }
             };
+            let world_seed = v["seed"].as_u64().unwrap_or(0);
             let mut composite = CompositeChunkSource::new(provenance);
             let mut added = 0usize;
             for layer in v["layers"].as_array().cloned().unwrap_or_default() {
@@ -295,7 +296,9 @@ async fn reset_chunk_source(server: &Arc<Server>, payload: &[u8]) {
                     let cfg = CellularSdfConfig {
                         cell_size_x: c["cellX"].as_i64().unwrap_or(192) as i32,
                         cell_size_z: c["cellZ"].as_i64().unwrap_or(160) as i32,
-                        seed: c["seed"].as_u64().unwrap_or(1),
+                        // XOR with the world seed: same authored scene,
+                        // different placements/rotations/scales per world.
+                        seed: c["seed"].as_u64().unwrap_or(1) ^ world_seed,
                         max_jitter_x: c["jitterX"].as_f64().unwrap_or(0.0) as f32,
                         max_jitter_z: c["jitterZ"].as_f64().unwrap_or(0.0) as f32,
                         max_yaw_degrees: c["yaw"].as_f64().unwrap_or(0.0) as f32,
@@ -467,6 +470,11 @@ async fn reset_chunk_source(server: &Arc<Server>, payload: &[u8]) {
         thread_local! {
             static CACHE: RefCell<std::collections::HashMap<String, u16>> =
                 RefCell::new(std::collections::HashMap::new());
+        }
+        static GENERATED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = GENERATED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if n % 4 == 0 {
+            crate::metrics::set_activity(&format!("streaming world — {n} chunks generated"));
         }
         let result = match source.generate(ChunkRequest::new(cx, cz)) {
             Ok(r) => r,

@@ -110,13 +110,6 @@
         <input id="cfg-motd" class="field" placeholder="MOTD (applies on next reboot)">
       </div>
       <div class="row">
-        <select id="cfg-gen" class="select" style="flex:1;">
-          <option value="normal">normal terrain</option>
-          <option value="void">void + bedrock floor</option>
-          <option value="flat">superflat</option>
-        </select>
-      </div>
-      <div class="row">
         <button id="cfg-newworld" class="btn btn-warn" style="flex:1;">⟳ new world…</button>
         <button id="cfg-wipesave" class="btn btn-ghost" title="delete the OPFS save and reboot fresh">🗑 wipe save</button>
       </div>
@@ -167,10 +160,10 @@
     <h2 style="margin:0;">new world</h2>
     <div class="row">
       <select id="nw-gen" class="select" style="flex:1;">
-        <option value="normal">normal terrain</option>
-        <option value="void">void + bedrock floor</option>
-        <option value="flat">superflat</option>
-        <option value="sdf">SDF field (nucleation)</option>
+        <option value="normal">🌍 normal terrain (vanilla noise)</option>
+        <option value="void">⬛ void + bedrock floor</option>
+        <option value="flat">▬ superflat</option>
+        <option value="sdf">✨ nucleation worlds (SDF / streamed / OSM)</option>
       </select>
     </div>
     <div class="row">
@@ -202,6 +195,7 @@
     </div>
     <label class="row hint" style="cursor:pointer;"><input id="nw-wipeopfs" type="checkbox"> also delete the OPFS save (full clean slate)</label>
     <div class="hint">Live: the generator and seed swap in place — connected players stay online and terrain regenerates around them.</div>
+    <div id="nw-status" style="display:none; flex-direction:column; gap:4px; font-size:12px; color:#9a8f7a; background:#241f18; border-radius:6px; padding:8px 10px;"></div>
     <div class="row">
       <button id="nw-create" class="btn btn-warn" style="flex:1;">create world</button>
       <button id="nw-cancel" class="btn btn-ghost">cancel</button>
@@ -210,10 +204,10 @@
 </div>
 
 <div id="map-modal" style="position:fixed; inset:0; z-index:130; display:none; align-items:center; justify-content:center; background:rgba(10,8,6,.8);">
-  <div class="card" style="width:600px; max-width:95vw; display:flex; flex-direction:column; gap:10px; padding:16px;">
+  <div class="card" style="width:min(1100px, 94vw); display:flex; flex-direction:column; gap:10px; padding:16px;">
     <h2 style="margin:0;">pick a location <span class="hint">drag to pan · scroll or ± to zoom · click to place</span></h2>
     <div style="position:relative;">
-      <canvas id="map-canvas" width="568" height="340" style="width:100%; border-radius:6px; cursor:crosshair; background:#241f18;"></canvas>
+      <canvas id="map-canvas" width="1068" height="560" style="width:100%; height:min(56vh, 560px); border-radius:6px; cursor:crosshair; background:#241f18;"></canvas>
       <div style="position:absolute; right:8px; top:8px; display:flex; flex-direction:column; gap:4px;">
         <button id="map-zin" class="btn btn-ghost" style="padding:2px 9px;">+</button>
         <button id="map-zout" class="btn btn-ghost" style="padding:2px 9px;">−</button>
@@ -225,7 +219,7 @@
       <button id="map-use" class="btn btn-warn">use location</button>
       <button id="map-cancel" class="btn btn-ghost">cancel</button>
     </div>
-    <canvas id="map-relief" width="568" height="140" style="width:100%; border-radius:6px; display:none; background:#241f18;"></canvas>
+    <canvas id="map-relief" width="1068" height="170" style="width:100%; border-radius:6px; display:none; background:#241f18;"></canvas>
   </div>
 </div>
 </body>

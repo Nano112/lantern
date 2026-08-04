@@ -434,12 +434,22 @@ if (motdInput) {
     writeText(`[cfg] MOTD saved — applies on the next world reboot\n`);
   });
 }
-const genSelect = document.getElementById("cfg-gen");
+const genSelect = null; // world type lives solely in the new-world modal
 if (genSelect) genSelect.value = (gen || "normal");
 const infoGen = document.getElementById("info-gen");
 if (infoGen) infoGen.textContent = gen || "normal";
 genSelect?.addEventListener("change", () => { if (infoGen) infoGen.textContent = genSelect.value; });
 const nwModal = document.getElementById("nw-modal");
+const nwStatus = document.getElementById("nw-status");
+function nwStep(text, done) {
+  if (!nwStatus) return;
+  nwStatus.style.display = "flex";
+  if (text === null) { nwStatus.style.display = "none"; nwStatus.innerHTML = ""; return; }
+  const el = document.createElement("div");
+  el.textContent = `${done ? "✓" : "…"} ${text}`;
+  if (done && nwStatus.lastChild) nwStatus.lastChild.remove();
+  nwStatus.appendChild(el);
+}
 document.getElementById("cfg-newworld")?.addEventListener("click", () => {
   document.getElementById("nw-gen").value = genSelect?.value || "normal";
   nwModal.style.display = "flex";
@@ -649,9 +659,9 @@ document.getElementById("nw-create")?.addEventListener("click", async () => {
   const g = document.getElementById("nw-gen").value;
   const seed = document.getElementById("nw-seed").value.trim();
   const wipe = document.getElementById("nw-wipeopfs").checked;
-  nwModal.style.display = "none";
-  if (genSelect) genSelect.value = g;
+  nwStep(null);
   if (wipe) { await wipeOpfsSave(); writeText("[world] OPFS save deleted\n"); }
+  if (g !== "sdf") nwModal.style.display = "none";
   if (g === "sdf") {
     const preset = nwSdfPreset.value;
     const block = document.getElementById("nw-sdf-block").value || "minecraft:stone";
@@ -663,9 +673,12 @@ document.getElementById("nw-create")?.addEventListener("click", async () => {
     if (preset === "planet" || preset === "cellular" || preset === "custom" || preset === "osm" || preset === "riverfall") {
       let payload;
       if (preset === "riverfall") {
+        nwStep("loading riverfall manifest (24 layers)");
         try {
           const resp = await fetch("riverfall-world.json");
           payload = await resp.json();
+          nwStep("riverfall manifest loaded", true);
+          payload.seed = /^\d+$/.test(seed) ? parseInt(seed, 10) : Math.floor(Math.random() * 2 ** 48);
         } catch (e) { writeText(`[world] riverfall manifest failed: ${e.message}\n`); return; }
       } else if (preset === "osm") {
         if (window.__osmBusy) { writeText("[osm] a fetch is already running — wait for it\n"); return; }
@@ -675,10 +688,15 @@ document.getElementById("nw-create")?.addEventListener("click", async () => {
         const lon = parseFloat(document.getElementById("nw-osm-lon").value);
         const radius = Math.min(parseInt(document.getElementById("nw-osm-radius").value, 10) || 250, 1500);
         if (!isFinite(lat) || !isFinite(lon)) { writeText("[osm] bad lat/lon\n"); return; }
+        nwStep(`querying OpenStreetMap around ${lat.toFixed(3)}, ${lon.toFixed(3)}`);
         let res;
         try { res = await fetchOsmFootprints(lat, lon, radius); }
-        catch (e) { writeText(`[osm] ${e.message}\n`); window.__osmBusy = false; return; }
+        catch (e) {
+          nwStep(`OSM failed: ${e.message} — wait a minute and retry`, true);
+          writeText(`[osm] ${e.message}\n`); window.__osmBusy = false; return;
+        }
         window.__osmBusy = false;
+        nwStep(`${res.footprints.length} features converted${res.terrain ? " + terrain" : ""}`, true);
         if (!res.footprints.length) { writeText("[osm] nothing found there\n"); return; }
         payload = { kind: "osm", footprints: res.footprints, base: null };
         if (res.terrain) {
@@ -694,7 +712,9 @@ document.getElementById("nw-create")?.addEventListener("click", async () => {
         payload = { kind: "sdf", block, minY: -100, maxY: 200, program };
       }
       writeText(`[world] streaming ${preset} world from nucleation — no restart\n`);
+      nwStep("world command sent — watch the ⚙ badge for chunk progress", true);
       farmWorker.postMessage({ type: "worldchunksrc", payload: JSON.stringify(payload) });
+      setTimeout(() => { nwModal.style.display = "none"; nwStep(null); }, 2500);
       return;
     }
     const entry = SDF_PRESETS[preset];
@@ -706,6 +726,7 @@ document.getElementById("nw-create")?.addEventListener("click", async () => {
     };
     writeText(`[world] generating SDF world (${preset}) — no restart\n`);
     farmWorker.postMessage({ type: "worldsdf", payload: JSON.stringify(payload) });
+    nwModal.style.display = "none";
     return;
   }
   if (serverRunning) {
@@ -816,6 +837,10 @@ function tileImg(z, x, y) {
   const img = new Image();
   img.crossOrigin = "anonymous";
   img.onload = drawMap;
+  img.onerror = () => {
+    tileCache.delete(key);
+    setTimeout(drawMap, 1200);
+  };
   img.src = `${apiBase2()}/api/osmtile/${z}/${x}/${y}.png`;
   tileCache.set(key, img);
   if (tileCache.size > 300) tileCache.delete(tileCache.keys().next().value);
