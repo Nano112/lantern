@@ -209,6 +209,130 @@ async fn reset_chunk_source(server: &Arc<Server>, payload: &[u8]) {
     let block = v["block"].as_str().unwrap_or("minecraft:stone").to_string();
 
     let source: std::sync::Arc<dyn ChunkSource> = match kind.as_str() {
+        // Full layered composite (e.g. the infinite riverfall manifest):
+        // layers of sdf/cellular sources with solid or field3 brushes.
+        "composite" => {
+            use nucleation::building::{BlockPalette, FieldBrush, GradientStop};
+            use nucleation::world_generation::{ChunkOverlayMode, CompositeChunkSource};
+            let build_brush = |b: &serde_json::Value| -> Option<BrushEnum> {
+                match b["kind"].as_str()? {
+                    "solid" => Some(BrushEnum::Solid(SolidBrush::new(
+                        nucleation::BlockState::new(b["block"].as_str()?.to_string()),
+                    ))),
+                    "field3" => {
+                        let field: nucleation::field::Field3 =
+                            serde_json::from_value(b["field"].clone()).ok()?;
+                        let stops: Vec<f32> = b["stops"]
+                            .as_array()?
+                            .iter()
+                            .filter_map(|x| x.as_f64().map(|f| f as f32))
+                            .collect();
+                        let colors: Vec<u8> = b["colors"]
+                            .as_array()?
+                            .iter()
+                            .filter_map(|x| x.as_u64().map(|c| c as u8))
+                            .collect();
+                        let gstops: Vec<GradientStop> = stops
+                            .iter()
+                            .zip(colors.chunks_exact(3))
+                            .map(|(pos, c)| GradientStop {
+                                position: f64::from(*pos),
+                                color: nucleation::blockpedia::ExtendedColorData::from_rgb(
+                                    c[0], c[1], c[2],
+                                ),
+                            })
+                            .collect();
+                        let space = match b["space"].as_str().unwrap_or("Oklab") {
+                            "Rgb" => nucleation::building::InterpolationSpace::Rgb,
+                            _ => nucleation::building::InterpolationSpace::Oklab,
+                        };
+                        let mut brush = FieldBrush::from_field3(
+                            field,
+                            gstops,
+                            b["lo"].as_f64().unwrap_or(-1.0),
+                            b["hi"].as_f64().unwrap_or(1.0),
+                        )
+                        .ok()?
+                        .with_space(space);
+                        if let Some(ids) = b["palette"].as_array() {
+                            let ids: Vec<String> = ids
+                                .iter()
+                                .filter_map(|x| x.as_str().map(str::to_string))
+                                .collect();
+                            brush.set_palette(std::sync::Arc::new(
+                                BlockPalette::from_block_ids(ids.iter().map(String::as_str)),
+                            ));
+                        }
+                        Some(BrushEnum::Field(brush))
+                    }
+                    _ => None,
+                }
+            };
+            let mut composite = CompositeChunkSource::new(provenance);
+            let mut added = 0usize;
+            for layer in v["layers"].as_array().cloned().unwrap_or_default() {
+                let Some(brush) = build_brush(&layer["brush"]) else {
+                    tracing::warn!("worldswap: composite layer {:?} brush rejected", layer["name"]);
+                    continue;
+                };
+                let volume =
+                    match nucleation::sdf::SdfNode::from_json(&layer["volume"].to_string()) {
+                        Ok(n) => n,
+                        Err(e) => {
+                            tracing::warn!("worldswap: composite layer sdf rejected: {e}");
+                            continue;
+                        }
+                    };
+                let (lmin, lmax) = (
+                    layer["minY"].as_i64().unwrap_or(-32) as i32,
+                    layer["maxY"].as_i64().unwrap_or(120) as i32,
+                );
+                let Ok(prov) = SourceProvenance::new("lantern-layer", "1") else {
+                    continue;
+                };
+                let src: std::sync::Arc<dyn ChunkSource> = if layer["type"] == "cellular" {
+                    let c = &layer["config"];
+                    let cfg = CellularSdfConfig {
+                        cell_size_x: c["cellX"].as_i64().unwrap_or(192) as i32,
+                        cell_size_z: c["cellZ"].as_i64().unwrap_or(160) as i32,
+                        seed: c["seed"].as_u64().unwrap_or(1),
+                        max_jitter_x: c["jitterX"].as_f64().unwrap_or(0.0) as f32,
+                        max_jitter_z: c["jitterZ"].as_f64().unwrap_or(0.0) as f32,
+                        max_yaw_degrees: c["yaw"].as_f64().unwrap_or(0.0) as f32,
+                        min_scale: c["minScale"].as_f64().unwrap_or(1.0) as f32,
+                        max_scale: c["maxScale"].as_f64().unwrap_or(1.0) as f32,
+                        min_y_offset: c["minYOff"].as_i64().unwrap_or(0) as i32,
+                        max_y_offset: c["maxYOff"].as_i64().unwrap_or(0) as i32,
+                        presence_numerator: c["presenceN"].as_u64().unwrap_or(1) as u32,
+                        presence_denominator: c["presenceD"].as_u64().unwrap_or(1) as u32,
+                        feature_salt: c["salt"].as_u64().unwrap_or(0),
+                        ..Default::default()
+                    };
+                    match CellularSdfChunkSource::new(volume, brush, lmin, lmax, cfg, prov) {
+                        Ok(s) => std::sync::Arc::new(s),
+                        Err(e) => {
+                            tracing::warn!("worldswap: cellular layer rejected: {e:?}");
+                            continue;
+                        }
+                    }
+                } else {
+                    match SdfChunkSource::new(volume, brush, lmin, lmax, prov) {
+                        Ok(s) => std::sync::Arc::new(s),
+                        Err(e) => {
+                            tracing::warn!("worldswap: sdf layer rejected: {e:?}");
+                            continue;
+                        }
+                    }
+                };
+                if composite.add_layer(src, ChunkOverlayMode::Replace).is_err() {
+                    tracing::warn!("worldswap: composite layer cap reached");
+                    break;
+                }
+                added += 1;
+            }
+            tracing::info!("worldswap: composite source with {added} layers");
+            std::sync::Arc::new(composite)
+        }
         "cellular" => {
             let node = match nucleation::sdf::SdfNode::from_json(&v["program"].to_string()) {
                 Ok(n) => n,

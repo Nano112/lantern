@@ -660,9 +660,14 @@ document.getElementById("nw-create")?.addEventListener("click", async () => {
       catch (e) { writeText(`[world] bad ${label} JSON: ${e.message}\n`); return null; }
     };
     // Streamed kinds go through nucleation's ChunkSource (infinite worlds).
-    if (preset === "planet" || preset === "cellular" || preset === "custom" || preset === "osm") {
+    if (preset === "planet" || preset === "cellular" || preset === "custom" || preset === "osm" || preset === "riverfall") {
       let payload;
-      if (preset === "osm") {
+      if (preset === "riverfall") {
+        try {
+          const resp = await fetch("riverfall-world.json");
+          payload = await resp.json();
+        } catch (e) { writeText(`[world] riverfall manifest failed: ${e.message}\n`); return; }
+      } else if (preset === "osm") {
         if (window.__osmBusy) { writeText("[osm] a fetch is already running — wait for it\n"); return; }
         window.__osmBusy = true;
         setTimeout(() => { window.__osmBusy = false; }, 120000);
@@ -851,25 +856,36 @@ function drawMap() {
   }
 }
 
+function mapPos(e) {
+  const r = mapCv.getBoundingClientRect();
+  return {
+    x: (e.clientX - r.left) * (mapCv.width / r.width),
+    y: (e.clientY - r.top) * (mapCv.height / r.height),
+  };
+}
 let dragging = null;
-mapCv?.addEventListener("mousedown", (e) => {
-  dragging = { x: e.offsetX, y: e.offsetY, moved: false };
+mapCv?.addEventListener("pointerdown", (e) => {
+  mapCv.setPointerCapture(e.pointerId);
+  const p = mapPos(e);
+  dragging = { x: p.x, y: p.y, moved: 0 };
 });
-mapCv?.addEventListener("mousemove", (e) => {
+mapCv?.addEventListener("pointermove", (e) => {
   if (!dragging) return;
-  const dx = e.offsetX - dragging.x, dy = e.offsetY - dragging.y;
-  if (Math.abs(dx) + Math.abs(dy) > 3) dragging.moved = true;
+  const p = mapPos(e);
+  const dx = p.x - dragging.x, dy = p.y - dragging.y;
+  dragging.moved += Math.abs(dx) + Math.abs(dy);
   mapState.lon = xToLon(lonToX(mapState.lon, mapState.zoom) - dx / 256, mapState.zoom);
   mapState.lat = yToLat(latToY(mapState.lat, mapState.zoom) - dy / 256, mapState.zoom);
-  dragging.x = e.offsetX; dragging.y = e.offsetY;
+  dragging.x = p.x; dragging.y = p.y;
   drawMap();
 });
-window.addEventListener("mouseup", (e) => {
-  if (dragging && !dragging.moved && e.target === mapCv) {
+mapCv?.addEventListener("pointerup", (e) => {
+  if (dragging && dragging.moved <= 4) {
+    const p = mapPos(e);
     const W = mapCv.width, H = mapCv.height, z = mapState.zoom;
     const cx = lonToX(mapState.lon, z) * 256, cy = latToY(mapState.lat, z) * 256;
-    const lon = xToLon((cx - W / 2 + e.offsetX) / 256, z);
-    const lat = yToLat((cy - H / 2 + e.offsetY) / 256, z);
+    const lon = xToLon((cx - W / 2 + p.x) / 256, z);
+    const lat = yToLat((cy - H / 2 + p.y) / 256, z);
     mapState.pick = { lat, lon };
     document.getElementById("map-readout").textContent =
       `${lat.toFixed(5)}, ${lon.toFixed(5)} — preview terrain or use location`;
@@ -877,19 +893,45 @@ window.addEventListener("mouseup", (e) => {
   }
   dragging = null;
 });
+mapCv?.addEventListener("pointercancel", () => { dragging = null; });
+function mapZoomAt(px, py, dir) {
+  const z0 = mapState.zoom;
+  const z1 = Math.max(3, Math.min(17, z0 + dir));
+  if (z0 === z1) return;
+  // Anchor the zoom on the cursor: keep the world point under (px,py) fixed.
+  const W = mapCv.width, H = mapCv.height;
+  const wx = (lonToX(mapState.lon, z0) * 256 - W / 2 + px) / 256;
+  const wy = (latToY(mapState.lat, z0) * 256 - H / 2 + py) / 256;
+  const scale = 2 ** (z1 - z0);
+  mapState.zoom = z1;
+  mapState.lon = xToLon(wx * scale - (px - W / 2) / 256, z1);
+  mapState.lat = yToLat(wy * scale - (py - H / 2) / 256, z1);
+  drawMap();
+}
 mapCv?.addEventListener("wheel", (e) => {
   e.preventDefault();
-  mapState.zoom = Math.max(3, Math.min(17, mapState.zoom + (e.deltaY < 0 ? 1 : -1)));
-  drawMap();
+  const p = mapPos(e);
+  mapZoomAt(p.x, p.y, e.deltaY < 0 ? 1 : -1);
 }, { passive: false });
-document.getElementById("map-zin")?.addEventListener("click", () => { mapState.zoom = Math.min(17, mapState.zoom + 1); drawMap(); });
-document.getElementById("map-zout")?.addEventListener("click", () => { mapState.zoom = Math.max(3, mapState.zoom - 1); drawMap(); });
+document.getElementById("map-zin")?.addEventListener("click", () => mapZoomAt(mapCv.width / 2, mapCv.height / 2, 1));
+document.getElementById("map-zout")?.addEventListener("click", () => mapZoomAt(mapCv.width / 2, mapCv.height / 2, -1));
 document.getElementById("nw-osm-map")?.addEventListener("click", () => {
   mapState.lat = parseFloat(document.getElementById("nw-osm-lat").value) || 48.8584;
   mapState.lon = parseFloat(document.getElementById("nw-osm-lon").value) || 2.2945;
   mapState.pick = { lat: mapState.lat, lon: mapState.lon };
   mapModal.style.display = "flex";
-  drawMap();
+  // Retina-crisp: match the backing store to the CSS size once visible.
+  requestAnimationFrame(() => {
+    const r = mapCv.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    if (r.width && Math.abs(mapCv.width - r.width * dpr) > 2) {
+      mapCv.width = Math.round(r.width * dpr);
+      mapCv.height = Math.round(r.height * dpr);
+    }
+    document.getElementById("map-readout").textContent =
+      `${mapState.lat.toFixed(5)}, ${mapState.lon.toFixed(5)} — click to move the marker`;
+    drawMap();
+  });
 });
 document.getElementById("map-cancel")?.addEventListener("click", () => mapModal.style.display = "none");
 document.getElementById("map-use")?.addEventListener("click", () => {
