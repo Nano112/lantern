@@ -487,6 +487,8 @@ const nwSdfPreset = document.getElementById("nw-sdf-preset");
 const nwSdfJson = document.getElementById("nw-sdf-json");
 nwGenSel?.addEventListener("change", () => {
   nwSdfBox.style.display = nwGenSel.value === "sdf" ? "flex" : "none";
+  document.getElementById("nw-persist-row").style.display =
+    nwGenSel.value === "sdf" ? "flex" : "none";
 });
 nwSdfPreset?.addEventListener("change", () => {
   nwSdfJson.style.display = nwSdfPreset.value === "custom" ? "block" : "none";
@@ -737,7 +739,8 @@ document.getElementById("nw-create")?.addEventListener("click", async () => {
         if (!program) return;
         payload = { kind: "sdf", block, minY: -100, maxY: 200, program };
       }
-      writeText(`[world] streaming ${preset} world from nucleation — no restart\n`);
+      payload.persist = document.getElementById("nw-persist").checked;
+      writeText(`[world] streaming ${preset} world from nucleation — no restart${payload.persist ? " (chunks persist)" : ""}\n`);
       nwStep("world command sent — watch the ⚙ badge for chunk progress", true);
       farmWorker.postMessage({ type: "worldchunksrc", payload: JSON.stringify(payload) });
       setTimeout(() => { nwModal.style.display = "none"; nwStep(null); }, 2500);
@@ -1073,7 +1076,8 @@ async function startEarthWorld(lat, lon) {
   const probe = await fetchTerrainGridRaw(lat, lon, 60, apiBase2());
   earth.originElev = probe ? probe.center : 0;
   nwStep(`origin elevation ${earth.originElev.toFixed(0)}m — anchored`, true);
-  farmWorker.postMessage({ type: "worldearth", payload: JSON.stringify({ lat, lon }) });
+  farmWorker.postMessage({ type: "worldearth", payload: JSON.stringify({
+    lat, lon, persist: document.getElementById("nw-persist").checked }) });
 }
 
 // Region worker: metrics tells us which 512-block regions the server wants.

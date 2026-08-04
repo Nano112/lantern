@@ -44,14 +44,19 @@ async fn swap(server: &Arc<Server>, clear_cache: bool) {
     // everything else regenerates lazily on demand. Nearest chunks first, in
     // small batches, with progress on the dashboard: a full old-cache resend
     // once took 25s+ of silent grinding and timed the player out.
-    const RADIUS: i32 = 6; // matches view_distance
+    let radius: i32 = match pumpkin::world::chunker::LANTERN_VIEW_DISTANCE
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        0 => 6,
+        n => i32::from(n),
+    };
     RESENDING.store(true, std::sync::atomic::Ordering::Relaxed);
     for player in players.iter() {
         if let ClientPlatform::Java(java_client) = player.client.as_ref() {
             let bp = player.living_entity.entity.block_pos.load();
             let (pcx, pcz) = (bp.0.x >> 4, bp.0.z >> 4);
-            let mut positions: Vec<Vector2<i32>> = (-RADIUS..=RADIUS)
-                .flat_map(|dx| (-RADIUS..=RADIUS).map(move |dz| Vector2::new(pcx + dx, pcz + dz)))
+            let mut positions: Vec<Vector2<i32>> = (-radius..=radius)
+                .flat_map(|dx| (-radius..=radius).map(move |dz| Vector2::new(pcx + dx, pcz + dz)))
                 .collect();
             positions.sort_by_key(|p| {
                 let (dx, dz) = (p.x - pcx, p.y - pcz);
@@ -137,6 +142,7 @@ async fn reset(server: &Arc<Server>, mode: &str, seed_override: Option<u64>) {
         ),
         _ => (false, Vec::new()),
     };
+    crate::persist::SKIP_WORLD_DIR.store(false, std::sync::atomic::Ordering::Relaxed);
     level.lantern_swap_generator(
         pumpkin_util::world_seed::Seed(seed),
         is_flat,
@@ -539,6 +545,8 @@ async fn reset_chunk_source(server: &Arc<Server>, payload: &[u8]) {
         out
     });
 
+    crate::persist::SKIP_WORLD_DIR
+        .store(!v["persist"].as_bool().unwrap_or(false), std::sync::atomic::Ordering::Relaxed);
     level.lantern_swap_generator_chunks(
         pumpkin_util::world_seed::Seed(0),
         fill,
@@ -593,6 +601,8 @@ async fn reset_sdf(server: &Arc<Server>, payload: &[u8]) {
         let d = program.eval(x as f32 * scale, (y as f32 - y_off) * scale, z as f32 * scale);
         (d <= 0.0).then_some(state)
     });
+    crate::persist::SKIP_WORLD_DIR
+        .store(!wrapper["persist"].as_bool().unwrap_or(false), std::sync::atomic::Ordering::Relaxed);
     level.lantern_swap_generator_density(
         pumpkin_util::world_seed::Seed(0),
         density,
@@ -726,6 +736,8 @@ async fn earth_start(server: &Arc<Server>, payload: &[u8]) {
         }
         out
     });
+    crate::persist::SKIP_WORLD_DIR
+        .store(!v["persist"].as_bool().unwrap_or(false), std::sync::atomic::Ordering::Relaxed);
     level.lantern_swap_generator_chunks(
         pumpkin_util::world_seed::Seed(0),
         fill,

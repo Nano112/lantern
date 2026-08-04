@@ -23,7 +23,19 @@ const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
 /// Files that must never be captured: bridge sockets, the archive itself,
 /// transient inputs (a stale import.schem restored over a fresh one shadows
 /// the user's download), and logs.
+/// Streamed worlds (SDF / composite / OSM / earth) regenerate from their
+/// sources — snapshotting their chunk files ballooned the archive past 250MB
+/// and OOM'd the autosave. Set by worldswap on generator swaps.
+pub static SKIP_WORLD_DIR: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 fn skip(path: &Path) -> bool {
+    if SKIP_WORLD_DIR.load(std::sync::atomic::Ordering::Relaxed) {
+        let p = path.to_string_lossy();
+        if p.trim_start_matches("./").starts_with("world") {
+            return true;
+        }
+    }
     let p = path.to_string_lossy();
     let p = p.trim_start_matches("./");
     // Any .sock is a virtual fd bridge — reading one during a snapshot walk
@@ -129,42 +141,40 @@ fn walk_wasi(dir: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
     }
 }
 
-fn snapshot_bytes() -> Vec<u8> {
-    let mut out = Vec::with_capacity(1024 * 1024);
-    out.extend_from_slice(MAGIC);
-
-    let mut push = |kind: u8, path: &Path, data: &[u8]| {
-        let p = path.to_string_lossy();
-        let p = p.trim_start_matches("./").as_bytes();
-        out.push(kind);
-        out.extend_from_slice(&(p.len() as u32).to_be_bytes());
-        out.extend_from_slice(p);
-        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
-        out.extend_from_slice(data);
-    };
-
-    for (path, data) in pumpkin_util::compat::fs::snapshot_entries() {
-        if !skip(&path) {
-            push(0, &path, &data);
-        }
-    }
-    let mut wasi_files = Vec::new();
-    walk_wasi(Path::new("."), &mut wasi_files);
-    for (path, data) in wasi_files {
-        push(1, &path, &data);
-    }
-    out
+fn write_record(
+    enc: &mut impl std::io::Write,
+    kind: u8,
+    path: &Path,
+    data: &[u8],
+) -> std::io::Result<()> {
+    let p = path.to_string_lossy();
+    let p = p.trim_start_matches("./").as_bytes();
+    enc.write_all(&[kind])?;
+    enc.write_all(&(p.len() as u32).to_be_bytes())?;
+    enc.write_all(p)?;
+    enc.write_all(&(data.len() as u32).to_be_bytes())?;
+    enc.write_all(data)
 }
 
 pub fn save_now(reason: &str) {
-    let raw = snapshot_bytes();
+    // Records stream straight into the deflate encoder: building the raw
+    // archive first peaked at a single >250MB Vec on chunk-heavy worlds and
+    // OOM'd the autosave.
     let mut bytes = MAGIC_V2.to_vec();
     {
         use std::io::Write;
         let mut enc =
             flate2::write::DeflateEncoder::new(&mut bytes, flate2::Compression::fast());
-        // skip the uncompressed magic; the V2 header replaces it
-        let _ = enc.write_all(&raw[MAGIC.len()..]);
+        for (path, data) in pumpkin_util::compat::fs::snapshot_entries() {
+            if !skip(&path) {
+                let _ = write_record(&mut enc, 0, &path, &data);
+            }
+        }
+        let mut wasi_files = Vec::new();
+        walk_wasi(Path::new("."), &mut wasi_files);
+        for (path, data) in wasi_files {
+            let _ = write_record(&mut enc, 1, &path, &data);
+        }
         let _ = enc.finish();
     }
     let kb = bytes.len() / 1024;
