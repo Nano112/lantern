@@ -123,10 +123,20 @@ async fn reset(server: &Arc<Server>, mode: &str) {
         "minecraft:plains".to_string(),
     );
 
-    // Forget everything the old world left behind: stored region files and
-    // the schematic paste ledger (its positions are meaningless now).
+    // Forget everything the old world left behind: stored region files, the
+    // schematic paste ledger, and — crucially — the scheduler's completed-
+    // chunk state (without this, re-requested chunks are considered already
+    // done and their listeners hang forever).
     let _ = std::fs::remove_dir_all("world");
     let _ = std::fs::remove_file("schem_prev.bin");
+    level
+        .lantern_drop_all_chunks
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    {
+        let mut loading = level.chunk_loading.lock().unwrap();
+        loading.send_change(); // wake the scheduler so it processes the drop
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
     tracing::info!("worldswap: generator reset to \"{mode}\" (seed {seed}) — regenerating…");
     crate::metrics::set_activity(&format!("generating a fresh \"{mode}\" world…"));
     swap(server).await;
