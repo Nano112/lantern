@@ -15,13 +15,20 @@ use pumpkin_util::math::vector2::Vector2;
 
 const SWAP_SOCK: &str = "world.sock";
 
-async fn swap(server: &Arc<Server>) {
+async fn swap(server: &Arc<Server>, clear_cache: bool) {
     let world = server.worlds.load()[0].clone();
     let level = world.level.clone();
 
-    let purged = level.loaded_chunks.len();
-    level.loaded_chunks.clear();
-    tracing::info!("worldswap: dropped {purged} cached chunks");
+    // Only file-based swaps (world zip / convert) clear the cache: the next
+    // fetch must re-read from disk. Generator resets already wiped + replayed
+    // through the scheduler — clearing here would orphan the freshly
+    // regenerated chunks (Full holders, empty public map, no transition left
+    // to fire) and hang every resend fetch.
+    if clear_cache {
+        let purged = level.loaded_chunks.len();
+        level.loaded_chunks.clear();
+        tracing::info!("worldswap: dropped {purged} cached chunks");
+    }
 
     let players = world.players.load();
     if players.is_empty() {
@@ -158,7 +165,7 @@ async fn reset(server: &Arc<Server>, mode: &str, seed_override: Option<u64>) {
     tokio::time::sleep(Duration::from_millis(100)).await;
     tracing::info!("worldswap: generator reset to \"{mode}\" (seed {seed}) — regenerating…");
     crate::metrics::set_activity(&format!("generating a fresh \"{mode}\" world…"));
-    swap(server).await;
+    swap(server, false).await;
 }
 
 /// Nucleation ChunkSource streaming worlds. Payload JSON:
@@ -328,7 +335,7 @@ async fn reset_chunk_source(server: &Arc<Server>, payload: &[u8]) {
     }
     tracing::info!("worldswap: chunk-source world active (kind {kind}) — streaming as explored");
     crate::metrics::set_activity("generating streamed world…");
-    swap(server).await;
+    swap(server, false).await;
 }
 
 /// SDF world: payload is JSON {"block":"minecraft:stone","scale":1.0,
@@ -385,7 +392,7 @@ async fn reset_sdf(server: &Arc<Server>, payload: &[u8]) {
     tokio::time::sleep(Duration::from_millis(100)).await;
     tracing::info!("worldswap: SDF world active ({block_name}, scale {scale}) — regenerating…");
     crate::metrics::set_activity("generating SDF world…");
-    swap(server).await;
+    swap(server, false).await;
 }
 
 /// Old-version world zip: run it through nucleation's DataConverter
@@ -431,7 +438,7 @@ async fn convert_and_swap(server: &Arc<Server>, zip: &[u8]) {
         }
     }
     tracing::info!("worldswap: wrote {} converted files", files.len());
-    swap(server).await;
+    swap(server, true).await;
 }
 
 pub fn spawn_control(server: Arc<Server>) {
@@ -463,7 +470,7 @@ pub fn spawn_control(server: Arc<Server>) {
                 } else {
                     let cmd = String::from_utf8_lossy(&frame).trim().to_string();
                     if cmd == "swap" {
-                        swap(&server).await;
+                        swap(&server, true).await;
                     } else if let Some(rest) = cmd.strip_prefix("reset ") {
                         let mut it = rest.trim().split_whitespace();
                         let mode = it.next().unwrap_or("normal").to_string();
