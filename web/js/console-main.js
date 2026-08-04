@@ -429,13 +429,19 @@ if (motdInput) {
 const genSelect = document.getElementById("cfg-gen");
 if (genSelect) genSelect.value = (gen || "normal");
 document.getElementById("cfg-newworld")?.addEventListener("click", () => {
-  if (!confirm("Wipe the saved world and reboot with the selected generator?")) return;
-  const next = new URLSearchParams();
-  if (params.has("offline")) next.set("offline", params.get("offline") || "1");
+  if (!confirm("Generate a brand-new world with the selected generator? (players stay connected)")) return;
   const g = genSelect?.value || "normal";
-  if (g !== "normal") next.set("gen", g);
-  next.set("fresh", "1");
-  location.href = `${location.pathname}?${next}`;
+  if (serverRunning) {
+    // Live: generator + seed swap in place, chunks regenerate around players.
+    writeText(`[world] resetting to a fresh "${g}" world — no restart\n`);
+    farmWorker.postMessage({ type: "worldreset", gen: g });
+  } else {
+    const next = new URLSearchParams();
+    if (params.has("offline")) next.set("offline", params.get("offline") || "1");
+    if (g !== "normal") next.set("gen", g);
+    next.set("fresh", "1");
+    location.href = `${location.pathname}?${next}`;
+  }
 });
 
 // --- player list + right-click actions ---

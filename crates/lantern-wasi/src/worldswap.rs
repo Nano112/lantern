@@ -53,6 +53,61 @@ async fn swap(server: &Arc<Server>) {
     );
 }
 
+/// Brand-new world without restarting the server: swap the generator (fresh
+/// seed), wipe stored chunks, purge the cache and re-send around players.
+/// The status seed / level_info keep boot-time values until the next reload —
+/// terrain is what actually swaps.
+async fn reset(server: &Arc<Server>, mode: &str) {
+    use pumpkin_world::generation::generator::FlatLayer;
+    let world = server.worlds.load()[0].clone();
+    let level = world.level.clone();
+
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64 ^ (d.as_secs() << 20))
+        .unwrap_or(42);
+    let (is_flat, layers) = match mode {
+        "void" => (
+            true,
+            vec![FlatLayer {
+                block: "minecraft:bedrock".to_string(),
+                height: 1,
+            }],
+        ),
+        "flat" => (
+            true,
+            vec![
+                FlatLayer {
+                    block: "minecraft:bedrock".to_string(),
+                    height: 1,
+                },
+                FlatLayer {
+                    block: "minecraft:dirt".to_string(),
+                    height: 2,
+                },
+                FlatLayer {
+                    block: "minecraft:grass_block".to_string(),
+                    height: 1,
+                },
+            ],
+        ),
+        _ => (false, Vec::new()),
+    };
+    level.lantern_swap_generator(
+        pumpkin_util::world_seed::Seed(seed),
+        is_flat,
+        layers,
+        "minecraft:plains".to_string(),
+    );
+
+    // Forget everything the old world left behind: stored region files and
+    // the schematic paste ledger (its positions are meaningless now).
+    let _ = std::fs::remove_dir_all("world");
+    let _ = std::fs::remove_file("schem_prev.bin");
+    tracing::info!("worldswap: generator reset to \"{mode}\" (seed {seed}) — regenerating…");
+    swap(server).await;
+}
+
 /// Old-version world zip: run it through nucleation's DataConverter
 /// (PaperMC port — block states, block entities, items, entities), re-emit
 /// current-version world files into ./world, then hot-swap. Bounded to a
@@ -124,6 +179,8 @@ pub fn spawn_control(server: Arc<Server>) {
                     let cmd = String::from_utf8_lossy(&frame).trim().to_string();
                     if cmd == "swap" {
                         swap(&server).await;
+                    } else if let Some(mode) = cmd.strip_prefix("reset ") {
+                        reset(&server, mode.trim()).await;
                     } else {
                         tracing::warn!("worldswap: unknown command {cmd:?}");
                     }
