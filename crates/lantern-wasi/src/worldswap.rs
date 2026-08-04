@@ -49,12 +49,18 @@ async fn swap(server: &Arc<Server>) {
             let name = &player.gameprofile.name;
             tracing::info!("worldswap: rebuilding {total} chunks around {name}…");
             for (done, batch) in positions.chunks(16).enumerate() {
+                // Fetch the whole batch concurrently — regeneration order is
+                // the scheduler's business, and awaiting ring-order serializes
+                // behind whichever chunk happens to be slowest.
+                let fetched = futures::future::join_all(batch.iter().map(|pos| {
+                    let level = level.clone();
+                    let pos = *pos;
+                    async move { level.get_or_fetch_chunk(pos, std::clone::Clone::clone).await }
+                }))
+                .await;
                 java_client.send_packet_now(&CChunkBatchStart).await;
-                for pos in batch {
-                    let chunk = level
-                        .get_or_fetch_chunk(*pos, std::clone::Clone::clone)
-                        .await;
-                    java_client.send_packet_now(&CChunkData(&chunk)).await;
+                for chunk in &fetched {
+                    java_client.send_packet_now(&CChunkData(chunk)).await;
                 }
                 java_client
                     .send_packet_now(&CChunkBatchEnd::new(batch.len() as u16))
