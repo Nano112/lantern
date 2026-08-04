@@ -192,6 +192,12 @@
         <input id="nw-osm-lat" class="field" placeholder="lat" value="48.8584">
         <input id="nw-osm-lon" class="field" placeholder="lon" value="2.2945">
         <input id="nw-osm-radius" class="field" placeholder="radius m" value="250" style="max-width:80px;">
+        <select id="nw-earth-scale" class="select" title="world scale — 1 block = N meters" style="max-width:92px;">
+          <option value="1">1 : 1 m</option>
+          <option value="2">1 : 2 m</option>
+          <option value="3">1 : 3 m</option>
+          <option value="4">1 : 4 m</option>
+        </select>
         <button id="nw-osm-map" class="btn btn-ghost" title="pick on a map">🗺</button>
       </div>
       <textarea id="nw-sdf-json" class="field" rows="5" style="display:none; resize:vertical; font-size:11px;" placeholder='{"type":"sphere","radius":40}'></textarea>

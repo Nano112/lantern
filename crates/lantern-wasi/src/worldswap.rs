@@ -503,9 +503,18 @@ async fn reset_chunk_source(server: &Arc<Server>, payload: &[u8]) {
                 for bz in 0..16 {
                     let wx = cx * 16 + bx;
                     let wz = cz * 16 + bz;
-                    let gx = ((wx - t.origin_x) / t.step).clamp(0, t.width - 1);
-                    let gz = ((wz - t.origin_z) / t.step).clamp(0, t.depth - 1);
-                    let h = t.heights[(gz * t.width + gx) as usize].max(1);
+                    let fx = (wx - t.origin_x) as f32 / t.step as f32;
+                    let fz = (wz - t.origin_z) as f32 / t.step as f32;
+                    let x0 = (fx.floor() as i32).clamp(0, t.width - 1);
+                    let z0 = (fz.floor() as i32).clamp(0, t.depth - 1);
+                    let x1 = (x0 + 1).min(t.width - 1);
+                    let z1 = (z0 + 1).min(t.depth - 1);
+                    let (txf, tzf) = (fx - fx.floor(), fz - fz.floor());
+                    let at = |x: i32, z: i32| t.heights[(z * t.width + x) as usize] as f32;
+                    let h = ((at(x0, z0) * (1.0 - txf) + at(x1, z0) * txf) * (1.0 - tzf)
+                        + (at(x0, z1) * (1.0 - txf) + at(x1, z1) * txf) * tzf)
+                        .round()
+                        .max(1.0) as i32;
                     for y in 1..=h {
                         let id = if y == h {
                             t.surface
@@ -700,9 +709,18 @@ async fn earth_start(server: &Arc<Server>, payload: &[u8]) {
             for bz in 0..16 {
                 let wx = cx * 16 + bx;
                 let wz = cz * 16 + bz;
-                let gx = ((wx - ox) / region.step).clamp(0, region.width - 1);
-                let gz = ((wz - oz) / region.step).clamp(0, region.depth - 1);
-                let h = region.heights[(gz * region.width + gx) as usize].max(1);
+                let fx = (wx - ox) as f32 / region.step as f32;
+                let fz = (wz - oz) as f32 / region.step as f32;
+                let x0 = (fx.floor() as i32).clamp(0, region.width - 1);
+                let z0 = (fz.floor() as i32).clamp(0, region.depth - 1);
+                let x1 = (x0 + 1).min(region.width - 1);
+                let z1 = (z0 + 1).min(region.depth - 1);
+                let (tx, tz) = (fx - fx.floor(), fz - fz.floor());
+                let at = |x: i32, z: i32| region.heights[(z * region.width + x) as usize] as f32;
+                let h = ((at(x0, z0) * (1.0 - tx) + at(x1, z0) * tx) * (1.0 - tz)
+                    + (at(x0, z1) * (1.0 - tx) + at(x1, z1) * tx) * tz)
+                    .round() as i32;
+                let h = h.max(1);
                 for y in 1..=h.max(region.water_y) {
                     let id = if y > h {
                         region.water

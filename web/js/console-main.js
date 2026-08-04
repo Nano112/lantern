@@ -1059,7 +1059,7 @@ if (vdSlider) {
 }
 
 // --- earth streamer: page-side region fetcher (docs/earth-streamer.md) ---
-const earth = { origin: null, originElev: 0, inflight: new Set(), lastOverpass: 0 };
+const earth = { origin: null, originElev: 0, scale: 1, inflight: new Set(), lastOverpass: 0 };
 
 async function earthElevAt(lat, lon) {
   const t = await fetchTerrainGrid(lat, lon, 40, apiBase2());
@@ -1071,6 +1071,7 @@ async function earthElevAt(lat, lon) {
 async function startEarthWorld(lat, lon) {
   nwStep("anchoring earth world");
   earth.origin = { lat, lon };
+  earth.scale = Math.max(1, parseFloat(document.getElementById("nw-earth-scale")?.value) || 1);
   earth.inflight.clear();
   // Raw elevation at origin becomes the global y-datum (origin ground ≈ y 40).
   const probe = await fetchTerrainGridRaw(lat, lon, 60, apiBase2());
@@ -1087,28 +1088,31 @@ async function earthFetchRegion(rx, rz) {
   earth.inflight.add(key);
   const { lat, lon } = earth.origin;
   const mLat = 111320, mLon = 111320 * Math.cos(lat * Math.PI / 180);
-  const cxm = rx * 512 + 256, czm = rz * 512 + 256; // region center in blocks(≈m)
+  const s = earth.scale; // 1 block = s meters
+  const cxm = (rx * 512 + 256) * s, czm = (rz * 512 + 256) * s;
   const cLat = lat - czm / mLat, cLon = lon + cxm / mLon;
   try {
     writeText(`[earth] fetching region ${key} (${cLat.toFixed(4)}, ${cLon.toFixed(4)})…\n`);
-    const t = await fetchTerrainGridRaw(cLat, cLon, 384, apiBase2());
+    const t = await fetchTerrainGridRaw(cLat, cLon, 384 * s, apiBase2());
     if (!t) throw new Error("no elevation");
-    const heights = t.heights.map((e) => Math.max(1, Math.round(e - earth.originElev) + 40));
+    const heights = t.heights.map((e) => Math.max(1, Math.round((e - earth.originElev) / s) + 40));
     // Overpass: gentle — one at a time, 8s spacing.
     const wait = Math.max(0, earth.lastOverpass + 8000 - Date.now());
     if (wait) await new Promise((r) => setTimeout(r, wait));
     earth.lastOverpass = Date.now();
     let feats = [];
     try {
-      const res = await fetchOsmFootprintsAt(cLat, cLon, 384, { ox: rx * 512 + 256, oz: rz * 512 + 256, ground: (x, z) => {
-        const gx = Math.min(t.width - 1, Math.max(0, Math.round((x - rx * 512) / t.step)));
-        const gz = Math.min(t.width - 1, Math.max(0, Math.round((z - rz * 512) / t.step)));
-        return Math.max(1, Math.round(t.heights[gz * t.width + gx] - earth.originElev) + 40);
+      const blockStep = t.step / s > 0 ? Math.max(1, Math.round(t.step / s)) : 2;
+      const res = await fetchOsmFootprintsAt(cLat, cLon, 384 * s, { ground: (x, z) => {
+        const gx = Math.min(t.width - 1, Math.max(0, Math.round((x - rx * 512) / blockStep)));
+        const gz = Math.min(t.width - 1, Math.max(0, Math.round((z - rz * 512) / blockStep)));
+        return Math.max(1, Math.round((t.heights[gz * t.width + gx] - earth.originElev) / s) + 40);
       }});
       feats = res;
     } catch (e) { writeText(`[earth] region ${key}: no OSM this pass (${e.message})\n`); }
     farmWorker.postMessage({ type: "worldregion", payload: JSON.stringify({
-      rx, rz, heights, width: t.width, step: t.step, waterY: 38, footprints: feats,
+      rx, rz, heights, width: t.width,
+      step: Math.max(1, Math.round(t.step / s)), waterY: 38, footprints: feats,
     })});
     writeText(`[earth] region ${key} delivered (${feats.length} features)\n`);
   } catch (e) {
@@ -1126,7 +1130,7 @@ async function fetchTerrainGridRaw(lat, lon, radius, base) {
   return t;
 }
 async function fetchTerrainGridMeters(lat, lon, radius, base) {
-  const Z = 14, n = 2 ** Z;
+  const Z = 15, n = 2 ** Z;
   const latRad = lat * Math.PI / 180;
   const tx = (lon + 180) / 360 * n;
   const ty = (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n;
@@ -1151,17 +1155,29 @@ async function fetchTerrainGridMeters(lat, lon, radius, base) {
     })().catch(() => {}));
   }
   await Promise.all(loads);
-  const elevAt = (la, lo) => {
-    const fx = (lo + 180) / 360 * n;
-    const laR = la * Math.PI / 180;
-    const fy = (1 - Math.log(Math.tan(laR) + 1 / Math.cos(laR)) / Math.PI) / 2 * n;
-    const X = Math.floor(fx), Y = Math.floor(fy);
+  const rawPx = (fx, fy) => {
+    const X = Math.floor(fx / 256), Y = Math.floor(fy / 256);
     const d = tiles.get(`${X},${Y}`);
     if (!d) return null;
-    const px = Math.min(255, Math.floor((fx - X) * 256));
-    const py = Math.min(255, Math.floor((fy - Y) * 256));
+    const px = Math.min(255, Math.floor(fx - X * 256));
+    const py = Math.min(255, Math.floor(fy - Y * 256));
     const i = (py * 256 + px) * 4;
     return d[i] * 256 + d[i + 1] + d[i + 2] / 256 - 32768;
+  };
+  // Bilinear across source pixels: kills the plateau stepping that nearest
+  // sampling produced on top of the tile resolution.
+  const elevAt = (la, lo) => {
+    const fx = (lo + 180) / 360 * n * 256;
+    const laR = la * Math.PI / 180;
+    const fy = (1 - Math.log(Math.tan(laR) + 1 / Math.cos(laR)) / Math.PI) / 2 * n * 256;
+    const x0 = Math.floor(fx - 0.5), y0 = Math.floor(fy - 0.5);
+    const tx = fx - 0.5 - x0, ty = fy - 0.5 - y0;
+    const p00 = rawPx(x0, y0), p10 = rawPx(x0 + 1, y0);
+    const p01 = rawPx(x0, y0 + 1), p11 = rawPx(x0 + 1, y0 + 1);
+    if (p00 === null) return null;
+    const a = p00 * (1 - tx) + (p10 ?? p00) * tx;
+    const b = (p01 ?? p00) * (1 - tx) + (p11 ?? p10 ?? p00) * tx;
+    return a * (1 - ty) + (p01 === null ? a : b) * ty;
   };
   const mLat = 111320, mLon = 111320 * Math.cos(latRad);
   const step = 2, half = Math.ceil(radius / step), width = half * 2 + 1;
@@ -1178,6 +1194,7 @@ async function fetchTerrainGridMeters(lat, lon, radius, base) {
 async function fetchOsmFootprintsAt(cLat, cLon, radius, opts) {
   const base = apiBase2();
   const o = earth.origin;
+  const s = earth.scale;
   const mLat = 111320, mLon = 111320 * Math.cos(o.lat * Math.PI / 180);
   const q = `[out:json][timeout:25];(way["building"](around:${radius},${cLat},${cLon});way["highway"](around:${radius},${cLat},${cLon}););out geom;`;
   let data = null, lastErr = null;
@@ -1193,7 +1210,7 @@ async function fetchOsmFootprintsAt(cLat, cLon, radius, opts) {
   if (!data) throw lastErr || new Error("overpass failed");
   const B = { church: "minecraft:stone_bricks", industrial: "minecraft:gray_concrete",
     retail: "minecraft:white_concrete", apartments: "minecraft:bricks", house: "minecraft:oak_planks" };
-  const proj = (pt) => [(pt.lon - o.lon) * mLon, -((pt.lat - o.lat) * mLat)];
+  const proj = (pt) => [(pt.lon - o.lon) * mLon / s, -((pt.lat - o.lat) * mLat / s)];
   const out = [];
   for (const el of data.elements || []) {
     if (el.type !== "way" || !el.geometry) continue;
@@ -1205,7 +1222,8 @@ async function fetchOsmFootprintsAt(cLat, cLon, radius, opts) {
       cx /= polygon.length; cz /= polygon.length;
       const ground = opts.ground(cx, cz);
       let h = parseFloat(tags.height) || (parseInt(tags["building:levels"], 10) || 0) * 3 || 8;
-      out.push({ polygon, height: ground + Math.min(Math.round(h), 250), min_y: ground,
+      h = Math.max(2, Math.round(h / s));
+      out.push({ polygon, height: ground + Math.min(h, 250), min_y: ground,
                  block: B[tags.building] || "minecraft:bricks" });
     } else if (tags.highway && el.geometry.length >= 2) {
       const style = ROAD_STYLE[tags.highway];
