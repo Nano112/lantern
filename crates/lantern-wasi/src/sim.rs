@@ -349,6 +349,12 @@ pub fn spawn_control(server: Arc<Server>) {
     };
     // In-game clicks inside the sim region belong to mc-tick: swallow them
     // from Pumpkin and queue for the next engine tick.
+    let _ = pumpkin::LANTERN_REGION_OWNED_HOOK.set(Box::new(|pos| {
+        let guard = SIM.lock().unwrap();
+        guard
+            .as_ref()
+            .is_some_and(|r| world_in_region(r, pos.0.x, pos.0.y, pos.0.z))
+    }));
     let _ = pumpkin::LANTERN_BLOCK_CHANGED_HOOK.set(Box::new(|pos, state_id| {
         let guard = SIM.lock().unwrap();
         if let Some(r) = guard.as_ref()
