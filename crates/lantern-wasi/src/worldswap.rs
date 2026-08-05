@@ -153,7 +153,14 @@ async fn reset(server: &Arc<Server>, mode: &str, seed_override: Option<u64>) {
     // Forget everything the old world left behind: stored region files, the
     // schematic paste ledger, and — crucially — the scheduler's completed-
     // chunk state (without this, re-requested chunks are considered already
-    // done and their listeners hang forever).
+    // done and their listeners hang forever). Structure templates reload
+    // lazily, so drop that cache too — long multi-world sessions were
+    // walking into the 4GiB wasm ceiling.
+    pumpkin_world::generation::structure::template::cache::global_cache().clear();
+    tracing::info!(
+        "worldswap: wasm memory watermark {} MB",
+        core::arch::wasm32::memory_size(0) * 64 / 1024
+    );
     let _ = std::fs::remove_dir_all("world");
     let _ = std::fs::remove_file("schem_prev.bin");
     level
