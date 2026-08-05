@@ -29,6 +29,10 @@ const SIM_SOCK: &str = "sim.sock";
 /// The last pasted schematic (raw bytes + world-paste offset), set by schematic.rs.
 static SIM_SOURCE: Mutex<Option<(Vec<u8>, (i32, i32, i32))>> = Mutex::new(None);
 
+pub fn set_region(min_w: (i32, i32, i32), max_w: (i32, i32, i32)) {
+    *SIM_REGION.lock().unwrap() = Some((min_w, max_w));
+}
+
 pub fn set_source(bytes: Vec<u8>, off: (i32, i32, i32)) {
     *SIM_SOURCE.lock().unwrap() = Some((bytes, off));
 }
@@ -45,6 +49,10 @@ struct RunningSim {
 
 /// The running engine, shared with the fork's player-interaction hook.
 static SIM: Mutex<Option<RunningSim>> = Mutex::new(None);
+/// World-coordinate region (min, max) the sim owns — set by schematic pastes.
+static SIM_REGION: Mutex<Option<((i32, i32, i32), (i32, i32, i32))>> = Mutex::new(None);
+/// World-path block changes inside the region, mirrored into the engine.
+static PENDING_EDIT: Mutex<Vec<(i32, i32, i32, u16)>> = Mutex::new(Vec::new());
 /// Player clicks captured by the hook, drained each engine tick.
 static PENDING_USE: Mutex<Vec<(i32, i32, i32)>> = Mutex::new(Vec::new());
 
@@ -54,6 +62,28 @@ fn world_in_region(r: &RunningSim, x: i32, y: i32, z: i32) -> bool {
         (r.max.0 + r.off.0, r.max.1 + r.off.1, r.max.2 + r.off.2),
     );
     x >= lo.0 && x <= hi.0 && y >= lo.1 && y <= hi.1 && z >= lo.2 && z <= hi.2
+}
+
+/// Reverse of the paste path: canonical "minecraft:name[k=v,…]" descriptor
+/// for a live world state id.
+fn descriptor_of_state(state_id: u16) -> Option<String> {
+    let id = pumpkin_data::BlockStateId::new_or_air(state_id);
+    let block = pumpkin_data::Block::from_state_id(id);
+    if block.id == pumpkin_data::Block::AIR.id {
+        return None;
+    }
+    let name = format!("minecraft:{}", block.name);
+    match block.properties(id) {
+        Some(props) => {
+            let kv: Vec<String> = props
+                .to_props()
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect();
+            Some(format!("{name}[{}]", kv.join(",")))
+        }
+        None => Some(name),
+    }
 }
 
 fn parse_descriptor(descriptor: &str) -> PaletteEntry {
@@ -73,9 +103,76 @@ fn parse_descriptor(descriptor: &str) -> PaletteEntry {
     }
 }
 
+/// Build the engine from the LIVE world region (mc_tick::embed) — the sim
+/// reflects reality including every player edit, no schematic round-trip.
+async fn build_simulation_from_world(
+    server: &Arc<Server>,
+    min_w: (i32, i32, i32),
+    max_w: (i32, i32, i32),
+) -> Result<RunningSim, String> {
+    use mc_tick::embed::SimulationBuilder;
+    let world = server.worlds.load()[0].clone();
+    let level = world.level.clone();
+
+    let volume = i64::from(max_w.0 - min_w.0 + 1)
+        * i64::from(max_w.1 - min_w.1 + 1)
+        * i64::from(max_w.2 - min_w.2 + 1);
+    if volume > 8_000_000 {
+        return Err(format!("{volume} cells is over the 8M-cell engine limit"));
+    }
+
+    const MARGIN: i32 = 4;
+    let size = (
+        max_w.0 - min_w.0,
+        max_w.1 - min_w.1,
+        max_w.2 - min_w.2,
+    );
+    let mut builder = SimulationBuilder::new(mc_tick::pos::Bounds::new(
+        mc_tick::Pos::new(-MARGIN, -MARGIN, -MARGIN),
+        mc_tick::Pos::new(size.0 + MARGIN, size.1 + MARGIN, size.2 + MARGIN),
+    ));
+
+    let mut captured = 0usize;
+    let mut unknown = 0usize;
+    for cx in (min_w.0 >> 4)..=(max_w.0 >> 4) {
+        for cz in (min_w.2 >> 4)..=(max_w.2 >> 4) {
+            level.get_or_fetch_chunk(Vector2::new(cx, cz), |_| ()).await;
+            for x in (cx * 16).max(min_w.0)..=((cx * 16 + 15).min(max_w.0)) {
+                for z in (cz * 16).max(min_w.2)..=((cz * 16 + 15).min(max_w.2)) {
+                    for y in min_w.1..=max_w.1 {
+                        let pos = BlockPos(Vector3::new(x, y, z));
+                        let Some(state) = world.get_block_state_if_loaded(&pos) else {
+                            continue;
+                        };
+                        let state = state.id.as_u16();
+                        let Some(descriptor) = descriptor_of_state(state) else {
+                            continue;
+                        };
+                        builder.set_block(
+                            mc_tick::Pos::new(x - min_w.0, y - min_w.1, z - min_w.2),
+                            &descriptor,
+                        );
+                        captured += 1;
+                    }
+                }
+            }
+        }
+    }
+    let _ = unknown;
+    tracing::info!("sim: captured {captured} live blocks from the world region");
+    let sim = builder.build()?;
+    Ok(RunningSim {
+        sim,
+        min: (0, 0, 0),
+        max: size,
+        off: min_w,
+    })
+}
+
 /// Vendored from nucleation's bridge: build a fully-wired Simulation from a
 /// schematic, settle mode "in world" (blocks stand as found, nothing re-runs
 /// onPlace).
+#[allow(dead_code)]
 fn build_simulation(bytes: &[u8], off: (i32, i32, i32)) -> Result<RunningSim, String> {
     let schematic = crate::schematic::parse_any(bytes).map_err(|e| format!("parse: {e}"))?;
     let bb = schematic.get_bounding_box();
@@ -240,6 +337,17 @@ pub fn spawn_control(server: Arc<Server>) {
     };
     // In-game clicks inside the sim region belong to mc-tick: swallow them
     // from Pumpkin and queue for the next engine tick.
+    let _ = pumpkin::LANTERN_BLOCK_CHANGED_HOOK.set(Box::new(|pos, state_id| {
+        let guard = SIM.lock().unwrap();
+        if let Some(r) = guard.as_ref()
+            && world_in_region(r, pos.0.x, pos.0.y, pos.0.z)
+        {
+            PENDING_EDIT
+                .lock()
+                .unwrap()
+                .push((pos.0.x, pos.0.y, pos.0.z, state_id));
+        }
+    }));
     let _ = pumpkin::LANTERN_USE_BLOCK_HOOK.set(Box::new(|pos| {
         let guard = SIM.lock().unwrap();
         if let Some(r) = guard.as_ref()
@@ -271,18 +379,23 @@ pub fn spawn_control(server: Arc<Server>) {
                     let cmd = String::from_utf8_lossy(&frame).trim().to_string();
                     match cmd.as_str() {
                         "on" => {
-                            let source = SIM_SOURCE.lock().unwrap().clone();
-                            match source {
-                                None => tracing::warn!("sim: no schematic loaded to simulate"),
-                                Some((bytes, off)) => match build_simulation(&bytes, off) {
-                                    Ok(r) => {
-                                        tracing::info!(
-                                            "sim: mc-tick engine ON — clicks inside the region are now vanilla-accurate (mc-tick), 20 ticks/s"
-                                        );
-                                        *SIM.lock().unwrap() = Some(r);
+                            let region = SIM_REGION.lock().unwrap().clone();
+                            match region {
+                                None => tracing::warn!(
+                                    "sim: no region — paste a schematic first (its bounds define the sim region)"
+                                ),
+                                Some((min_w, max_w)) => {
+                                    match build_simulation_from_world(&server, min_w, max_w).await
+                                    {
+                                        Ok(r) => {
+                                            tracing::info!(
+                                                "sim: mc-tick ON — live world captured; clicks and edits inside the region run on the engine"
+                                            );
+                                            *SIM.lock().unwrap() = Some(r);
+                                        }
+                                        Err(e) => tracing::warn!("sim: refused to start: {e}"),
                                     }
-                                    Err(e) => tracing::warn!("sim: refused to start: {e}"),
-                                },
+                                }
                             }
                         }
                         "off" => {
@@ -311,6 +424,24 @@ pub fn spawn_control(server: Arc<Server>) {
             let updates: Vec<(i32, i32, i32, u16)> = {
                 let mut guard = SIM.lock().unwrap();
                 if let Some(r) = guard.as_mut() {
+                    for (x, y, z, state_id) in PENDING_EDIT.lock().unwrap().drain(..) {
+                        let pos = mc_tick::Pos::new(
+                            x - r.min.0 - r.off.0,
+                            y - r.min.1 - r.off.1,
+                            z - r.min.2 - r.off.2,
+                        );
+                        match descriptor_of_state(state_id) {
+                            None => mc_tick::embed::break_block_by_hand(&mut r.sim, pos),
+                            Some(descriptor) => {
+                                match r.sim.registry_mut().intern(&descriptor) {
+                                    Ok(state) => r.sim.place_block_by_hand(pos, state),
+                                    Err(e) => tracing::warn!(
+                                        "sim: player placed {descriptor} — engine can't represent it ({e:?}); sim may diverge here"
+                                    ),
+                                }
+                            }
+                        }
+                    }
                     for (x, y, z) in PENDING_USE.lock().unwrap().drain(..) {
                         let pos = mc_tick::Pos::new(
                             x - r.min.0 - r.off.0,

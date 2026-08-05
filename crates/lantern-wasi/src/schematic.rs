@@ -90,6 +90,13 @@ async fn paste(server: &Arc<Server>, bytes: &[u8], off: (i32, i32, i32)) {
     };
 
     crate::sim::set_source(bytes.to_vec(), off);
+    if let Ok(s) = parse_any(bytes) {
+        let bb = s.get_bounding_box();
+        crate::sim::set_region(
+            (bb.min.0 + off.0, bb.min.1 + off.1, bb.min.2 + off.2),
+            (bb.max.0 + off.0, bb.max.1 + off.1, bb.max.2 + off.2),
+        );
+    }
     let world = server.worlds.load()[0].clone();
     let level = world.level.clone();
     let air = Block::AIR.default_state.id;
