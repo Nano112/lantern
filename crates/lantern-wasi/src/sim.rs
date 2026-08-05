@@ -11,6 +11,7 @@
 //! (`src/bridge/mc_tick.rs::wire_simulation`, settle mode InWorld) — worth
 //! upstreaming into nucleation as a public embed API so this can't drift.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -53,6 +54,8 @@ static SIM: Mutex<Option<RunningSim>> = Mutex::new(None);
 static SIM_REGION: Mutex<Option<((i32, i32, i32), (i32, i32, i32))>> = Mutex::new(None);
 /// World-path block changes inside the region, mirrored into the engine.
 static PENDING_EDIT: Mutex<Vec<(i32, i32, i32, u16)>> = Mutex::new(Vec::new());
+/// Changes applied since the last once-a-second summary log.
+static APPLIED_ACCUM: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Player clicks captured by the hook, drained each engine tick.
 static PENDING_USE: Mutex<Vec<(i32, i32, i32)>> = Mutex::new(Vec::new());
 
@@ -307,24 +310,33 @@ fn build_simulation(bytes: &[u8], off: (i32, i32, i32)) -> Result<RunningSim, St
 async fn apply_updates(server: &Arc<Server>, updates: &[(i32, i32, i32, u16)]) {
     let world = server.worlds.load()[0].clone();
     let level = world.level.clone();
-    let mut sent: Vec<(BlockPos, u16)> = Vec::new();
+
+    // Write to storage, grouping by 16³ section as we go: one vanilla
+    // multi-block-update packet per touched section per tick. The previous
+    // per-block send_packet_now flood (hundreds × 20Hz) desynced clients
+    // into ghost blocks.
+    let mut by_section: HashMap<(i32, i32, i32), Vec<(BlockPos, pumpkin_data::BlockStateId)>> =
+        HashMap::new();
     for (x, y, z, state_id) in updates {
         level
             .get_or_fetch_chunk(Vector2::new(x >> 4, z >> 4), |_| ())
             .await;
         let block_pos = BlockPos(Vector3::new(*x, *y, *z));
-        level.set_block_state(&block_pos, pumpkin_data::BlockStateId::new_or_air(*state_id));
-        sent.push((block_pos, *state_id));
+        let state = pumpkin_data::BlockStateId::new_or_air(*state_id);
+        level.set_block_state(&block_pos, state);
+        by_section
+            .entry((x >> 4, y >> 4, z >> 4))
+            .or_default()
+            .push((block_pos, state));
     }
     let players = world.players.load();
     for player in players.iter() {
         if let ClientPlatform::Java(java_client) = player.client.as_ref() {
-            for (location, state_id) in &sent {
+            for section in by_section.values() {
                 java_client
-                    .send_packet_now(&CBlockUpdate {
-                        location: *location,
-                        state_id: VarInt(i32::from(*state_id)),
-                    })
+                    .enqueue_packet(&pumpkin_protocol::java::client::play::CMultiBlockUpdate::new(
+                        section,
+                    ))
                     .await;
             }
         }
@@ -477,7 +489,22 @@ pub fn spawn_control(server: Arc<Server>) {
             };
             if !updates.is_empty() {
                 apply_updates(&server, &updates).await;
-                tracing::info!("sim: applied {} block changes", updates.len());
+                APPLIED_ACCUM.fetch_add(updates.len() as u64, std::sync::atomic::Ordering::Relaxed);
+            }
+            // One summary line per second instead of per-tick spam.
+            {
+                use std::sync::atomic::Ordering;
+                static LAST_LOG_TICK: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
+                static TICKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                let t = TICKS.fetch_add(1, Ordering::Relaxed);
+                if t.wrapping_sub(LAST_LOG_TICK.load(Ordering::Relaxed)) >= 20 {
+                    LAST_LOG_TICK.store(t, Ordering::Relaxed);
+                    let n = APPLIED_ACCUM.swap(0, Ordering::Relaxed);
+                    if n > 0 {
+                        tracing::info!("sim: {n} block changes applied in the last second");
+                    }
+                }
             }
         }
     });
