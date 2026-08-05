@@ -37,8 +37,23 @@ struct RunningSim {
     sim: mc_tick::Simulation,
     /// Schematic bounding-box minimum: engine coords + this = schematic coords.
     min: (i32, i32, i32),
+    /// Schematic bounding-box maximum (inclusive).
+    max: (i32, i32, i32),
     /// World-paste offset: schematic coords + this = world coords.
     off: (i32, i32, i32),
+}
+
+/// The running engine, shared with the fork's player-interaction hook.
+static SIM: Mutex<Option<RunningSim>> = Mutex::new(None);
+/// Player clicks captured by the hook, drained each engine tick.
+static PENDING_USE: Mutex<Vec<(i32, i32, i32)>> = Mutex::new(Vec::new());
+
+fn world_in_region(r: &RunningSim, x: i32, y: i32, z: i32) -> bool {
+    let (lo, hi) = (
+        (r.min.0 + r.off.0, r.min.1 + r.off.1, r.min.2 + r.off.2),
+        (r.max.0 + r.off.0, r.max.1 + r.off.1, r.max.2 + r.off.2),
+    );
+    x >= lo.0 && x <= hi.0 && y >= lo.1 && y <= hi.1 && z >= lo.2 && z <= hi.2
 }
 
 fn parse_descriptor(descriptor: &str) -> PaletteEntry {
@@ -65,6 +80,7 @@ fn build_simulation(bytes: &[u8], off: (i32, i32, i32)) -> Result<RunningSim, St
     let schematic = crate::schematic::parse_any(bytes).map_err(|e| format!("parse: {e}"))?;
     let bb = schematic.get_bounding_box();
     let min = (bb.min.0, bb.min.1, bb.min.2);
+    let max = (bb.max.0, bb.max.1, bb.max.2);
 
     let volume = i64::from(bb.max.0 - bb.min.0 + 1)
         * i64::from(bb.max.1 - bb.min.1 + 1)
@@ -188,46 +204,25 @@ fn build_simulation(bytes: &[u8], off: (i32, i32, i32)) -> Result<RunningSim, St
     // Settle mode InWorld: no place_on_place, no settle_with_order.
     sim.record();
 
-    Ok(RunningSim { sim, min, off })
+    Ok(RunningSim { sim, min, max, off })
 }
 
-async fn apply_changes(server: &Arc<Server>, running: &mut RunningSim) -> usize {
-    let changes: Vec<(mc_tick::Pos, mc_tick::StateId)> = running
-        .sim
-        .recorded()
-        .iter()
-        .map(|c| (c.pos, c.to))
-        .collect();
-    running.sim.record(); // reset the log for the next step
-    if changes.is_empty() {
-        return 0;
-    }
-
+async fn apply_updates(server: &Arc<Server>, updates: &[(i32, i32, i32, u16)]) {
     let world = server.worlds.load()[0].clone();
     let level = world.level.clone();
-    let mut updates: Vec<(BlockPos, u16)> = Vec::new();
-
-    for (pos, state) in changes {
-        let Some(descriptor) = running.sim.registry().descriptor(state) else {
-            continue;
-        };
-        let entry = parse_descriptor(descriptor);
-        let Some(resolved) = BlockStateResolver::resolve_simple(&entry) else {
-            continue;
-        };
-        let wx = pos.x + running.min.0 + running.off.0;
-        let wy = pos.y + running.min.1 + running.off.1;
-        let wz = pos.z + running.min.2 + running.off.2;
-        level.get_or_fetch_chunk(Vector2::new(wx >> 4, wz >> 4), |_| ()).await;
-        let block_pos = BlockPos(Vector3::new(wx, wy, wz));
-        level.set_block_state(&block_pos, resolved.id);
-        updates.push((block_pos, resolved.id.as_u16()));
+    let mut sent: Vec<(BlockPos, u16)> = Vec::new();
+    for (x, y, z, state_id) in updates {
+        level
+            .get_or_fetch_chunk(Vector2::new(x >> 4, z >> 4), |_| ())
+            .await;
+        let block_pos = BlockPos(Vector3::new(*x, *y, *z));
+        level.set_block_state(&block_pos, pumpkin_data::BlockStateId::new_or_air(*state_id));
+        sent.push((block_pos, *state_id));
     }
-
     let players = world.players.load();
     for player in players.iter() {
         if let ClientPlatform::Java(java_client) = player.client.as_ref() {
-            for (location, state_id) in &updates {
+            for (location, state_id) in &sent {
                 java_client
                     .send_packet_now(&CBlockUpdate {
                         location: *location,
@@ -237,15 +232,25 @@ async fn apply_changes(server: &Arc<Server>, running: &mut RunningSim) -> usize 
             }
         }
     }
-    updates.len()
 }
 
 pub fn spawn_control(server: Arc<Server>) {
     let Ok(fd) = crate::net_bridge::open_socket(SIM_SOCK) else {
         return;
     };
+    // In-game clicks inside the sim region belong to mc-tick: swallow them
+    // from Pumpkin and queue for the next engine tick.
+    let _ = pumpkin::LANTERN_USE_BLOCK_HOOK.set(Box::new(|pos| {
+        let guard = SIM.lock().unwrap();
+        if let Some(r) = guard.as_ref()
+            && world_in_region(r, pos.0.x, pos.0.y, pos.0.z)
+        {
+            PENDING_USE.lock().unwrap().push((pos.0.x, pos.0.y, pos.0.z));
+            return true;
+        }
+        false
+    }));
     tokio::spawn(async move {
-        let mut running: Option<RunningSim> = None;
         let mut acc: Vec<u8> = Vec::new();
         let mut buf = vec![0u8; 16 * 1024];
         let mut ticker = tokio::time::interval(Duration::from_millis(50));
@@ -272,17 +277,16 @@ pub fn spawn_control(server: Arc<Server>) {
                                 Some((bytes, off)) => match build_simulation(&bytes, off) {
                                     Ok(r) => {
                                         tracing::info!(
-                                            "sim: mc-tick engine ON ({} ticks/s, vanilla phase order)",
-                                            20
+                                            "sim: mc-tick engine ON — clicks inside the region are now vanilla-accurate (mc-tick), 20 ticks/s"
                                         );
-                                        running = Some(r);
+                                        *SIM.lock().unwrap() = Some(r);
                                     }
                                     Err(e) => tracing::warn!("sim: refused to start: {e}"),
                                 },
                             }
                         }
                         "off" => {
-                            if running.take().is_some() {
+                            if SIM.lock().unwrap().take().is_some() {
                                 tracing::info!("sim: mc-tick engine OFF (Pumpkin logic only)");
                             }
                         }
@@ -290,15 +294,9 @@ pub fn spawn_control(server: Arc<Server>) {
                             if let Some(rest) = other.strip_prefix("use ") {
                                 let p: Vec<i32> =
                                     rest.split_whitespace().filter_map(|t| t.parse().ok()).collect();
-                                if let (Some(r), [x, y, z]) = (running.as_mut(), p.as_slice()) {
-                                    // World coords → engine coords.
-                                    let pos = mc_tick::Pos::new(
-                                        x - r.min.0 - r.off.0,
-                                        y - r.min.1 - r.off.1,
-                                        z - r.min.2 - r.off.2,
-                                    );
-                                    r.sim.use_block(pos);
-                                    tracing::info!("sim: use_block at {x} {y} {z}");
+                                if let [x, y, z] = p.as_slice() {
+                                    PENDING_USE.lock().unwrap().push((*x, *y, *z));
+                                    tracing::info!("sim: use_block queued at {x} {y} {z}");
                                 }
                             } else {
                                 tracing::warn!("sim: unknown command {other:?}");
@@ -308,13 +306,47 @@ pub fn spawn_control(server: Arc<Server>) {
                 }
             }
 
-            // One engine tick per 50ms while enabled.
-            if let Some(r) = running.as_mut() {
-                r.sim.step();
-                let applied = apply_changes(&server, r).await;
-                if applied > 0 {
-                    tracing::info!("sim: tick {} applied {applied} changes", r.sim.tick_count());
+            // One engine tick per 50ms while enabled. Resolve block states
+            // inside the lock; apply/broadcast (await) outside it.
+            let updates: Vec<(i32, i32, i32, u16)> = {
+                let mut guard = SIM.lock().unwrap();
+                if let Some(r) = guard.as_mut() {
+                    for (x, y, z) in PENDING_USE.lock().unwrap().drain(..) {
+                        let pos = mc_tick::Pos::new(
+                            x - r.min.0 - r.off.0,
+                            y - r.min.1 - r.off.1,
+                            z - r.min.2 - r.off.2,
+                        );
+                        r.sim.use_block(pos);
+                    }
+                    r.sim.step();
+                    let changes: Vec<(mc_tick::Pos, mc_tick::StateId)> =
+                        r.sim.recorded().iter().map(|c| (c.pos, c.to)).collect();
+                    r.sim.record();
+                    let mut out = Vec::with_capacity(changes.len());
+                    for (pos, state) in changes {
+                        let Some(descriptor) = r.sim.registry().descriptor(state) else {
+                            continue;
+                        };
+                        let entry = parse_descriptor(descriptor);
+                        let Some(resolved) = BlockStateResolver::resolve_simple(&entry) else {
+                            continue;
+                        };
+                        out.push((
+                            pos.x + r.min.0 + r.off.0,
+                            pos.y + r.min.1 + r.off.1,
+                            pos.z + r.min.2 + r.off.2,
+                            resolved.id.as_u16(),
+                        ));
+                    }
+                    out
+                } else {
+                    Vec::new()
                 }
+            };
+            if !updates.is_empty() {
+                apply_updates(&server, &updates).await;
+                tracing::info!("sim: applied {} block changes", updates.len());
             }
         }
     });
